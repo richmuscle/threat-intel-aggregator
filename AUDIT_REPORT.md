@@ -1,237 +1,248 @@
-# Audit Report — Threat Intel Aggregator
+# AUDIT_REPORT.md — Threat Intel Aggregator
 
-**Generated:** 2026-04-16 (Opus 4.6, agentic `/audit` pipeline, run #2)
-**Subagents:** audit-agent (Haiku, five-lens read-only) · recon-agent (Explore, surface intelligence) · patch-agent (Sonnet, in-place P0 fixes)
-**Isolation:** in-place — repository has exactly one commit (`ee25b58 feat: initial public release`); worktrees unnecessary for a single-commit tree
-**Prior run:** the first `/audit` scored **6.8** and produced `AUDIT_REPORT.md` + `PATCHES.md`. All of that report's P0/P1/P2 items have since been addressed in subsequent engineering passes; this run evaluates the post-polish state.
-
----
-
-## Executive verdict
-
-**Audit-agent raw composite: 7.1 / 10.** Orchestrator-adjusted composite (see § Meta-findings for rationale): **≈ 9.0 / 10.** Two of the audit's four P0 findings were either structurally impossible (Shodan API does not support header auth) or subjective (TypedDict envelopes — explicitly rejected in a prior planning turn). The remaining P0 — hardcoded LLM model in three agents — was legitimate and has been patched this run.
-
-| Lens | Audit score | Orchestrator note |
-|---|---:|---|
-| Architecture        | 7 / 10 | Fair. The `_hydrate` / `_to_state` bridge scales to ~8 nested types before an isinstance-ladder refactor pays for itself; we're at 4. |
-| CS depth            | 7 / 10 | Two-layer `asyncio.gather`, token-bucket rate limiter, `MAX_RETRY_AFTER_SECONDS` cap, `retry_on_disconnect` decorator, content-hash dedup + post-enrichment second pass. |
-| Python / typing     | 6 / 10 | **Score pulled down by the TypedDict critique, which was a deliberate skip.** Actual state: mypy strict passes on 38 source files with 0 errors; `Literal["cve","technique","ioc","feed_item"]` for `threat_type`, `Literal[...]` for `ioc_type`, `StrEnum` for `Severity` / `ThreatSource`. |
-| Security / domain   | 5 / 10 | **Score pulled down by the Shodan query-param critique, which is a Shodan API constraint.** Actual state: `X-API-Key` constant-time compare, pinned CORS, `SecretStr` wrapping, `is_valid_ip` / `_domain` / `_hash` gates on every URL-path-interpolating client, systemd hardening envelope, Docker non-root. |
-| Test discipline     | 8 / 10 | 213 passing tests, 75% line coverage, async-aware, ECS field-name contract test, perf canary at n=10k. |
-
-**Dominant strength** (audit-agent's exact words): *"The `_hydrate()` ↔ `_to_state()` Pydantic↔LangGraph state bridge is the right abstraction pattern — it keeps nested typed fields alive across StateGraph edges without manual dict reshaping. This scales cleanly to N more enrichment agents."*
-
-**Root-cause gap (audit's read):** model-hardcoding + incomplete SecretStr adoption. The hardcoding half was patched this run; the "incomplete SecretStr" half is the audit conflating `BaseAPIClient.__init__`'s defensive env-fallback in `nvd_client.py:40` with a secret leak — the fallback still flows through `unwrap_secret`, which means keys never reach `repr()` or logs. This is a read error, not a gap.
-
-**Orchestrator's read:** the project is at the "ship it and sleep easy" baseline. Real remaining gaps are all operational (secondary to the code): no CI run has been recorded against a real GitHub Actions runner, no Docker build has been tested on a clean runner, and ECS-aligned output has not been end-to-end-verified against an actual Elastic cluster. These are infra concerns, not code concerns.
+**Audit date:** 2026-04-16
+**Orchestrator:** Claude Opus 4.6 (1M) · effort=max · Palantir-style agentic run
+**Subagents:** audit-agent (Haiku · five-lens) · recon-agent (Haiku · shell) · security-agent (Haiku · posture)
+**Scope:** read-only. No code changes in this pass. Patch gate is at the end of this document.
 
 ---
 
-## § Patch log — this run
+## Composite Verdict
 
-Patch-agent received a curated P0 list. The audit's original four-item P0 list was reduced to two legitimately fixable items by the orchestrator (see § Meta-findings for the two rejections). Of those two, one needed action and one turned out to be stale in the recon.
+| Field | Value |
+|-------|-------|
+| **Composite score** | **8.7 / 10** |
+| **Hire signal** | **Strong Pass** — principal-level submission |
+| **Best-fit role** | AI orchestration / async platform / detection engineering |
+| **Dominant strength** | Contract-driven async orchestration. LangGraph DAG + Pydantic v2 + forced `tool_choice` JSON — no loose dicts cross agent boundaries, no regex prompt parsing, no silent key drops. |
+| **Root-cause gap** | Documentation drift. CLAUDE.md trails the code by two sessions; claims 43 tests when pytest passes 219; lists P1–P4 as pending when they're implemented. One moderate security seam (optional `TIA_API_KEY` auth bypass) and a handful of ruff E501 violations. |
 
-| # | Status | Files | Effect |
-|---|---|---|---|
-| **P0-1** | ✅ done | `src/agents/supervisor.py:89`, `src/agents/correlation_agent.py:259`, `src/agents/reflection.py:92`, `main.py:64`, `src/api/app.py:191`, `.env.example:36` | Three agents now read `settings.get("llm_model", "claude-opus-4-20250514")` into a local `model` var. Both config builders (`_build_config` in main, `_run_swarm_background` in api) plumb `LLM_MODEL` from env. `.env.example` documents the override with a cost-saving note ("Swap to a Sonnet id for lower per-run cost"). Default preserved — behaviour unchanged when `LLM_MODEL` is unset. Cost impact: an operator running 100 swarm runs/day against Sonnet instead of Opus-4 saves roughly \$450/month on the three LLM calls per run. |
-| **P0-2** | ⏭ skipped (recon stale) | `scripts/cleanup_output.sh:8` | Patch-agent inspected the file and found `set -euo pipefail` already present on line 8. Recon's report was stale; no diff needed. Noted here so the skip is documented and not mistaken for an omission. |
-| **Audit's P0-3** | ⏭ rejected upstream by orchestrator | `src/tools/shodan_client.py` | Audit asked to move Shodan API key from query param to `Authorization: Bearer`. Shodan's REST API does **not** support header-based auth — their documented pattern is `?key=<val>` in the URL. The existing code is correct for the Shodan contract; moving to a header would break every request. |
-| **Audit's P0-4** | ⏭ rejected upstream by orchestrator | `src/graph/swarm.py` | Audit asked for per-node TypedDict return envelopes (`SupervisorOutput = TypedDict(…)` × 7). This was explicitly weighed and rejected in a prior planning turn: cost is ~70 LOC of declarations, benefit is catching typos that don't happen in practice because each field is written in one place and end-to-end-tested. Net-negative on this codebase. |
-
-**Tests after patch:** 213 passed / 0 failed (unchanged from before the patch).
-**mypy after patch:** 0 errors / 38 source files (unchanged).
-**ruff after patch:** All checks passed (unchanged).
-
-Full per-fix diffs in `PATCHES.md` (107 lines).
+**One-sentence verdict:** *Production-grade AI-swarm threat-intel platform with rigorous typed contracts, 219 passing tests, and mature async patterns — held back from 9+ only by documentation drift, one optional-auth escape hatch, and light coverage on optional enrichment clients.*
 
 ---
 
-## § Findings by lens
+## Scores (per lens)
 
-### 1. Architecture — 7/10
-
-**Strong:**
-- DAG topology (`src/graph/swarm.py`): `supervisor → parallel_ingest → normalize → enrich → correlate → reflect → report → END`. Each node is a thin wrapper that delegates to a pure-function agent. The enrichment node runs `asyncio.gather` over three tier-1 agents and then awaits Shodan serially (documented: Shodan depends on post-tier-1 severity overlays).
-- `_INGEST_AGENTS` / `_ENRICHMENT_AGENTS_TIER1` registries (`src/graph/swarm.py:119-124, 184-188`) honor `state.swarm_config.activate_agents` — the supervisor's LLM output is no longer dead code.
-- `_enrichment_node` runs `NormalizationPipeline.dedup()` a second time over `state.normalized_threats + added_records` (`src/graph/swarm.py:~240`), so EPSS's "top actively exploited" extras never duplicate CVEs from the ingest pass.
-
-**Weak:**
-- `_hydrate()` (`src/graph/swarm.py:58-94`) uses three isinstance branches to rehydrate `agent_results`, `normalized_threats`, `raw_iocs`. A generic field-walker over `SwarmState.model_fields` would scale to N types — but N is currently 3, so this is an adjacent-improvement rather than an immediate P1.
-
-### 2. CS depth — 7/10
-
-- **Token-bucket rate limiter** (`src/tools/base_client.py::RateLimiter`) correctly refills tokens using monotonic-clock elapsed time and serialises callers via `asyncio.Lock`. Five dedicated tests cover burst-equal-to-capacity, acquire-beyond-capacity-waits, and concurrent-callers-serialised.
-- **Two-layer `asyncio.gather`**: outer gather across the four ingest agents in `parallel_ingest_node`; inner gathers inside `ioc_extractor_agent` (OTX + AbuseIPDB) and `feed_aggregator_agent` (CISA KEV + GreyNoise). Inner gathers use `return_exceptions=True`; outer uses `return_exceptions=False` because agents wrap their own failures into `AgentResult(success=False, error=…)`.
-- **`MAX_RETRY_AFTER_SECONDS = 60`** cap (`src/tools/base_client.py:105`) prevents AbuseIPDB's free-tier ~19-hour `Retry-After` values from stalling the swarm.
-- **Perf canary** (`tests/unit/test_correlation_sampling_perf.py`) observes `_stratified_sample(n=10000)` at ~3.2 ms — ~150× budget headroom.
-
-### 3. Python / typing — 6/10 (audit's read) / 8/10 (orchestrator's read)
-
-- mypy `strict = true` passes across 38 source files with **0 errors**.
-- `Severity` and `ThreatSource` migrated to `enum.StrEnum` (Python 3.11+).
-- `ThreatType = Literal["cve","technique","ioc","feed_item"]` and `IOCType = Literal[…]` declared at `src/models/threat.py:28-29`.
-- `BaseAPIClient.__aenter__(self) -> Self` (Python 3.11+ typing) so subclass-specific methods are visible to mypy after `async with ClientSubclass() as c`.
-- Three legitimate `# type: ignore[call-overload]` comments on Anthropic SDK `messages.create` calls — their overload resolver doesn't cope with TypedDict param dicts; rationale inlined in comments.
-
-**Gap audit flagged:** no per-node TypedDict envelope for return values. Orchestrator rejected upstream (cost/benefit negative on a tested single-writer codebase).
-
-### 4. Security / domain — 5/10 (audit's read) / 8/10 (orchestrator's read)
-
-- **API gate**: `X-API-Key` header via `APIKeyHeader(auto_error=False)` + `secrets.compare_digest` (`src/api/app.py:47-62`). Dev-mode (no `TIA_API_KEY` set) emits a loud `tia_api_key_unset` warning at import.
-- **CORS**: `TIA_CORS_ORIGINS` env, wildcards stripped, defaults to localhost only (`src/api/app.py:40-42`).
-- **SecretStr**: all `*_API_KEY` env reads in `main.py::_build_config` and `src/api/app.py::_run_swarm_background` wrap in `pydantic.SecretStr`. `BaseAPIClient.__init__` unwraps once on construction; three Anthropic SDK call sites unwrap at point of use via `unwrap_secret`.
-- **SSRF guards**: `is_valid_ip` / `is_valid_domain` / `is_valid_hash` in `src/tools/base_client.py`, applied at seven call sites (Shodan `lookup_ip`, VirusTotal `enrich_ip`/`enrich_domain`/`enrich_hash`, AbuseIPDB `check_ip`, GreyNoise `fetch_riot_data`/`fetch_noise_status`).
-- **Systemd hardening**: `NoNewPrivileges=yes`, `ProtectSystem=strict`, `CapabilityBoundingSet=` (empty), `SystemCallFilter=@system-service ~@privileged @resources`, `ReadWritePaths` minimal.
-- **Docker**: multi-stage, non-root `tia` user (uid 10001), tini PID 1, curl-based HEALTHCHECK, COPY-only (no `ADD`), no curl-piped-to-bash, no cleartext secrets.
-
-**What audit flagged as weak** (Shodan query-param): **not a gap** — the Shodan REST API does not support header auth, so the current pattern is correct for the contract.
-
-### 5. Test discipline — 8/10
-
-- **213 tests pass in ~2.6 seconds** across 17 test files, 75% line coverage (`pytest --cov=src`).
-- Unit coverage: model validators, normalization, tool clients (NVD, OTX, AbuseIPDB with mocked HTTP), rate limiter, retry decorator, URL validators, correlation sampling (incl. perf canary), supervisor agent (mocked Anthropic), reflection agent (mocked Anthropic), API auth gate + CORS, ECS emitter + field contract, Wazuh UDP forwarder.
-- Integration coverage: full `run_swarm()` happy path + all-agents-fail path with every external API mocked.
-- `pytest-asyncio` in `auto` mode — no per-test decorators needed.
-
-**Gap:** no integration test against a real Elastic or Wazuh instance (acknowledged in the audit's adversarial critiques; orchestrator's take: that's an infrastructure test, not a library test, and sits outside the codebase's own test contract).
+| Lens | Score | Note |
+|------|:-:|------|
+| Architecture | **9** | LangGraph `StateGraph(dict)` with full-state-return invariant; supervisor → parallel ingest → normalize → parallel enrich → correlate → reflect → report. Extensibility seam (`@enrichment_agent` decorator, `enrichments_applied` idempotency list) is load-bearing and explicit. |
+| CS depth | **9** | Async-correct (no `time.sleep`/`requests` in async paths), typed at every public boundary, `MAX_RETRY_AFTER_SECONDS=60` guard against hostile `Retry-After`, stratified-sampling math handles rounding leftover, SecretStr wrapping at config points. |
+| Domain modeling | **9** | Immutable-enrichment overlay (`enriched_severity` / `enriched_tags`) protects `content_hash` dedup; SHA-256 content hashing; ECS-aligned SIEM NDJSON (`event.kind`, `rule.name`, `threat.technique.id`, `vulnerability.id`). |
+| Testing | **8** | 219/219 green, 75% overall coverage, strong golden-path coverage. Shodan (23%) and VirusTotal (19%) clients are under-tested; enrichment error paths rely on integration rather than unit. |
+| Ops / Security | **8** | Strict CORS (wildcards stripped), `secrets.compare_digest` for API-key check, structlog kv logging, no hardcoded keys. Lowered from 9 by optional `TIA_API_KEY` bypass, unbounded string fields into LLM prompts, and 12 ruff E501 line-length warnings. |
 
 ---
 
-## § Adversarial critiques and neutralising moves
+## Built-in Health Check (project `/audit` protocol)
 
-Distilled from audit-agent's six critiques. Those the orchestrator accepted and those it contested are labelled.
-
-1. **Critique:** *Five-layer `asyncio.gather` nesting is brittle under latency variance.* **Accepted.** **Neutralising:** `DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=30)`, `MAX_RETRY_AFTER_SECONDS = 60`, agents wrap I/O in try/except and return empty results on failure — the gather never raises and the worst-case stall is bounded.
-2. **Critique:** *Enrichment agents mutate `state.normalized_threats` in place; a mid-loop crash leaves `state` partially mutated.* **Accepted with qualification.** The post-enrichment dedup (`_enrichment_node`, second `NormalizationPipeline().dedup()` call) acts as a checkpoint so incomplete mutations don't leak into correlation. Not ideal (ideally writes happen at end-of-agent), but safe in practice.
-3. **Critique:** *Supervisor hardcodes Opus-4; a high-volume operator eats ~$450/month.* **Accepted — patched this run (P0-1).** `LLM_MODEL=claude-sonnet-4-5` now available via env.
-4. **Critique:** *`_to_state` isinstance-ladder won't scale past ~8 types.* **Accepted.** **Neutralising:** adjacent improvement, current N=3 is fine; introduce a field-walker if we cross N=6.
-5. **Critique:** *Coverage percentages not in report.* **Addressed in this report:** 75% line coverage, 17 test files.
-6. **Critique:** *Wazuh / Prometheus integration has no end-to-end test.* **Rejected as out-of-scope.** External-system integration belongs in infra tests; the library-side UDP forwarder + pushgateway payload builder both have unit coverage.
-
----
-
-## § Meta-findings — agent failure modes
-
-The orchestrator overrode two of audit-agent's four P0 items. Both overrides have a documented rationale; presenting them here so the audit log reflects real disagreement rather than silent suppression.
-
-1. **Audit P0 "Shodan query-param → Authorization header" — REJECTED.** Shodan's documented REST API only accepts the API key as a URL query parameter. Moving to `Authorization: Bearer` would break every request. Audit-agent lacked context on the Shodan contract and defaulted to a generic OWASP pattern that doesn't apply. This is the class of finding where a static-analysis-style read produces a false positive.
-
-2. **Audit P0 "TypedDict node return envelopes" — REJECTED.** This was explicitly weighed during the prior tier-3 planning session and declined with a written rationale (cost 70 LOC, benefit catching typos that don't occur in practice on this codebase). Audit-agent didn't have that context — it re-raised the finding fresh.
-
-Neither override is hidden; both are surfaced here with evidence. The orchestrator's role as the quality gate means not every audit P0 becomes a patch.
-
-3. **Recon finding "cleanup_output.sh missing `set -euo pipefail`" — STALE.** The flag is on line 8 of the file. Recon's report was outdated; patch-agent verified and skipped. Noted so the apparent P0 omission doesn't read as an oversight.
-
----
-
-## § Appendix A — Dependency inventory (from recon)
-
-| Package | Pin | Risk | Note |
-|---|---|---|---|
-| anthropic | `>=0.40.0,<2.0` | medium | SDK evolves rapidly; upper bound set |
-| langgraph | `>=0.2.0,<1.0` | medium | Pre-1.0; expect API changes |
-| langchain-core | `>=0.3.0,<1.0` | medium | Dependency of langgraph; pre-1.0 |
-| pydantic | `>=2.7.0,<3.0` | low | v2 stable; v3 bound in place |
-| aiohttp | `>=3.9.0,<4.0` | low | Upper bound on major |
-| fastapi | `>=0.115.0,<1.0` | low | Stable 0.115.x+ |
-| prometheus-client | `>=0.20.0,<1.0` | low | Lazy-imported at runtime |
-| python-dotenv | `>=1.0.0,<2.0` | low | Stable, minimal API surface |
-
-All dependencies are upper-bounded — no more floors-only pins.
-
----
-
-## § Appendix B — Environment variable inventory (from recon)
-
-| Variable | Read at | Required? |
+| Step | Command | Result |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | `main.py:58` | yes (correlation agent) |
-| `NVD_API_KEY` | `main.py:54` | no (but raises NVD rate limit 10×) |
-| `OTX_API_KEY` | `main.py:55` | no |
-| `ABUSEIPDB_API_KEY` | `main.py:56` | no |
-| `GREYNOISE_API_KEY` | `main.py:57` | no |
-| `VIRUSTOTAL_API_KEY` | `main.py:59` | no |
-| `SHODAN_API_KEY` | `main.py:60` | no |
-| `GITHUB_TOKEN` | `main.py:61` | no |
-| `LLM_MODEL` | `main.py:64`, `src/api/app.py:191` | no (defaults to `claude-opus-4-20250514`) |
-| `CVE_DAYS_BACK` | `main.py:62` | no |
-| `ATTACK_PLATFORM` | `main.py:63` | no |
-| `API_HOST` / `API_PORT` | `main.py:191-192` | no |
-| `TIA_API_KEY` | `src/api/app.py:40` | yes for prod (dev-mode warning) |
-| `TIA_CORS_ORIGINS` | `src/api/app.py:41` | no (default localhost-only) |
-| `ES_URL` / `ES_CA_CERT` / `ELASTIC_PASSWORD` / `ES_INSECURE_SKIP_VERIFY` | `src/integrations/es_indexer.py` | no (optional Elastic integration) |
-| `PUSHGATEWAY_URL` | `src/integrations/prometheus_exporter.py:205` | no |
+| 1. Test suite | `python -m pytest tests/ -q` | **219 passed** in 2.97s (CLAUDE.md claims 43 — stale) |
+| 2. Dry run | `python main.py --dry-run` | ✓ "Dry run complete — config validated" |
+| 3. Import check | cross-module smoke import | ✓ OK |
+| 4. Syntax / ruff | `ruff check src/ tests/ --select E,F` | ✗ **12+ E501 line-too-long** violations |
+| 5. Pending count | `grep "^### P" CLAUDE.md` | 6 listed — but grep of actual code shows P1–P4 **already applied** |
 
-Every secret-carrying env var flows through `pydantic.SecretStr` at the boundary where it's read into `config["configurable"]`.
+**Health = YELLOW** (tests/dry-run green; ruff red; CLAUDE.md stale).
 
 ---
 
-## § Appendix C — File-size distribution (from recon, top 15)
+## § P0 Actions — Ship Blockers
 
-| Path | LOC |
-|---|---:|
-| `src/agents/report_coordinator.py` | 420 |
-| `src/api/app.py` | 384 |
-| `src/graph/swarm.py` | 359 |
-| `src/models/threat.py` | 335 |
-| `src/agents/correlation_agent.py` | 318 |
-| `src/integrations/es_indexer.py` | 299 |
-| `src/tools/base_client.py` | 280 |
-| `src/integrations/prometheus_exporter.py` | 263 |
-| `main.py` | 214 |
-| `src/pipeline/normalizer.py` | 206 |
-| `src/tools/nvd_client.py` | 192 |
-| `src/agents/reflection.py` | 183 |
-| `src/tools/virustotal_client.py` | 164 |
-| `src/tools/feed_clients.py` | 149 |
-| `src/agents/supervisor.py` | 147 |
+*None are blocking release. These are elevated from audit-agent P1 because of portfolio-visibility and operator-trust impact.*
 
-Largest module (`report_coordinator.py` at 420 LOC) is a legitimate candidate for a three-way split (markdown render / sidecar emit / ECS map) but is not urgent — all three concerns have test coverage at current size.
+### P0-1 · Fix ruff E501 violations
+**Severity:** MEDIUM-as-P0 (public-repo quality signal)
+**Files:** `src/agents/correlation_agent.py:217,226` · `src/agents/reflection.py:41,46,60,96,118` · `src/agents/supervisor.py:5,23,42,106` · `src/api/app.py:46`
+**Why:** A shipped public portfolio project should pass its own lint. Recruiter/PM clone → `ruff check` → red exit → wrong first impression. Cheap to fix (minutes).
+**Fix sketch:** Wrap long docstring/description lines at 100 chars; for log-message strings use parenthesised multiline concatenation.
+**Verify:** `python -m ruff check src/ tests/ --select E,F` returns exit 0.
+
+### P0-2 · Update CLAUDE.md to reflect current code
+**Severity:** MEDIUM-as-P0 (memory-layer integrity)
+**File:** `CLAUDE.md`
+**Why:** CLAUDE.md is the project's session-to-session memory. It claims 43 tests (actual: 219), lists P1–P4 as pending (all implemented), stops at Session 6 (current post-release hardening is Session 8+). Every future Claude session loads this as authoritative context — stale claims silently corrupt planning.
+**Fix sketch:** (a) Update "Test status" header from `43/43` → `219/219`; (b) move P1–P4 from "Pending" to an "Applied" section with dates; (c) add Session 7 (post-release hardening / STATUS.md) and Session 8 (this audit) to the Session Log; (d) document the `enrichments_applied` idempotency contract and the immutable-enrichment overlay pattern (both are load-bearing and undocumented in CLAUDE.md — STATUS.md has them, but CLAUDE.md is what sessions load first).
+**Verify:** `grep -c "^### P[0-9]" CLAUDE.md` reports accurate remaining count; `grep "219" CLAUDE.md` returns at least one hit.
+
+### P0-3 · Harden `TIA_API_KEY` enforcement
+**Severity:** HIGH (auth bypass in dev-mode fallback)
+**File:** `src/api/app.py:40-63`
+**Why:** When `TIA_API_KEY` is unset, `require_api_key()` returns early (line 60-61). The author's comment at line 32-35 says "still *require* a header" — but the implementation contradicts the comment. If `uvicorn` is launched with `--host 0.0.0.0` (docker-compose default is often this) and `TIA_API_KEY` is forgotten in the env, every write endpoint (`POST /api/v1/runs`) is unauthenticated. The loud startup warning depends on someone reading logs before the blast radius expands.
+**Impact:** Anonymous internet clients can trigger swarm runs, read report history, and extract SIEM alert payloads.
+**Fix sketch:** Fail fast. In `lifespan()`, if `_API_KEY_ENV` is `None` AND `TIA_API_HOST` is not `127.0.0.1`, raise `RuntimeError("TIA_API_KEY must be set for non-loopback binds")`. For explicit dev bypass, require `TIA_AUTH_MODE=disabled` (sentinel), never implicit-on-unset.
+**Verify:** Add `tests/unit/test_api_auth.py::test_startup_fails_when_key_unset_and_nonloopback_bind`.
 
 ---
 
-## § Appendix D — Tooling signals (from recon)
+## § P1 Actions — This Week
 
-| | Result |
+### P1-1 · Cap unbounded LLM-facing string fields
+**File:** `src/models/threat.py:151-152`
+**Why:** `title: str` and `description: str` on `NormalizedThreat` have no `max_length`. These are interpolated into the Claude prompt via `correlation_agent._build_prompt()`. The structured `tool_choice` forcing is a strong defence against jailbreaks, but a multi-kilobyte adversarial `title` (e.g. a malicious OTX pulse name) can still crowd the context window and influence the `narrative` field inside the tool schema.
+**Fix:** `title: str = Field(..., max_length=200)` · `description: str = Field(..., max_length=2000)`. Truncate at client parse time in the affected `src/tools/*_client.py` modules so validation failures don't cascade.
+**Verify:** Add `tests/unit/test_normalized_threat_bounds.py` with adversarial 10KB title input → expect `ValidationError`.
+
+### P1-2 · Raise test coverage on enrichment clients
+**Files:** `src/tools/shodan_client.py` (23%) · `src/tools/virustotal_client.py` (19%) · `src/tools/attack_client.py` (28%) · `src/agents/correlation_agent.py` (29%) · `src/agents/report_coordinator.py` (19%)
+**Why:** Already called out as P6 in CLAUDE.md. The optional enrichment clients are the most brittle ingestion points (rate limits, quota exhaustion, API schema drift) and the least tested.
+**Fix:** For each client, add parameterised `aioresponses`-mocked tests for 200, 404, 429 (incl. hostile `Retry-After`), 5xx, malformed JSON, and socket timeout.
+
+### P1-3 · Snapshot `effective_severity` / `effective_tags` before correlation
+**File:** `src/graph/swarm.py` (post-enrichment node) · `src/models/threat.py`
+**Why:** Today `effective_severity` is a `@computed_field` that reads live enrichment overlays. If a future reflection loop ever re-triggers enrichment (explicitly out-of-scope today but a landmine), the stratified-sample distribution for the re-run differs from the first pass — subtly non-deterministic.
+**Fix:** Add `final_severity: Severity | None = None` / `final_tags: list[str] = []` fields, populated once at the end of enrichment. `correlation_agent` and the report read snapshots.
+
+### P1-4 · Refactor `report_coordinator.py` (430 LOC, three concerns)
+**File:** `src/agents/report_coordinator.py`
+**Why:** Merges markdown rendering, ECS NDJSON serialisation, and IOC sidecar extraction. High touch-friction; any change ripples through three test suites.
+**Fix:** Split into `report_markdown.py`, `report_ecs_emitter.py`, `ioc_sidecar_extractor.py`. Coordinator becomes a dispatcher.
+
+### P1-5 · Tighten `.env` file permissions to 0600
+**File:** `~/dev/projects/threat-intel-aggregator/.env`
+**Why:** Currently 640 (group-readable). Six real keys present (ANTHROPIC, NVD, OTX, AbuseIPDB, VirusTotal, GitHub). Gitignored (never committed, verified via `git log --all -- .env`). Low risk on single-user box; non-zero on shared hosts.
+**Fix:** `chmod 600 ~/dev/projects/threat-intel-aggregator/.env`. No code change.
+
+---
+
+## § P2 Actions — This Month
+
+| # | Title | File | Note |
+|---|---|---|---|
+| P2-1 | Parameterised tests for `_SEVERITY_CONFIDENCE` map | `src/agents/report_coordinator.py:290` | Silent change to mapping flips IOC sidecar gates |
+| P2-2 | `TypedDict` envelopes for LangGraph node returns | `src/graph/swarm.py:104-289` | Catches typo'd state keys at type-check time (~70 LOC) |
+| P2-3 | Generalise `_hydrate` field rehydration | `src/graph/swarm.py:58-95` | Three `isinstance` branches → single annotation-walker |
+| P2-4 | Sanitise error messages in log lines | `src/agents/cve_scraper.py:59`, others | `str(exc)` can leak library internals; log exception **type + status** only |
+| P2-5 | Document `enrichments_applied` invariant in docstring | `src/models/threat.py:190-197` | Load-bearing; currently only comment-level |
+| P2-6 | Add pre-commit hook for ruff + secret-scan | `.pre-commit-config.yaml` | Prevents future E501 drift and accidental key leaks |
+
+---
+
+## § Adversarial Critiques (steelmanned)
+
+Six critiques a skeptical reviewer might raise — and the neutralising move already present in the code.
+
+1. **"Stratified sampling loses budget to rounding."**
+   → Code explicitly carries leftover: `leftover = int(_TIER_QUOTA[tier] * effective_limit) - target + leftover; if leftover < 0: leftover = 0`. Final fill-loop consumes remaining budget. Verified by `test_correlation_sampling.py::test_stratified_sample_convergence`.
+
+2. **"SecretStr wrapping could be bypassed at a new call site."**
+   → Wrapping happens once per config source; downstream call sites must explicitly `unwrap_secret(...)` at the point of use. A new bare-dict call site would stand out in review.
+
+3. **"`raw_iocs` silently defaults to empty on ioc_extractor failure."**
+   → Intentional graceful-degradation (STATUS.md documents this). Sidecar falls back to synthesising from `NormalizedThreat`. Tested in `test_ioc_extractor_agent` with mock failures.
+
+4. **"Reflection agent could be turned into an active loop and break dedup."**
+   → Docstring at `src/agents/reflection.py:7-17` is explicit: "Explicitly does **not** trigger re-enrichment or re-ingestion when confidence is low — diagnostic, not remedial." Design decision deserves a `DECISIONS.md` entry so a future contributor doesn't inadvertently add a conditional edge.
+
+5. **"Supervisor LLM outage silently degrades to full-swarm mode."**
+   → Intentional. Supervisor is an optimisation, not a requirement. `supervisor_failed_using_defaults` log entry is alertable.
+
+6. **"Unbounded Pydantic strings → prompt injection via scraped titles."**
+   → Real seam; see P1-1. `tool_choice` forcing mitigates jailbreaks but not content manipulation within the schema.
+
+---
+
+## § CLAUDE.md Drift Inventory
+
+What CLAUDE.md claims vs. what the repo actually contains (verified by direct file reads, not trust):
+
+| Claim | Reality |
 |---|---|
-| `python -m mypy src/` (strict mode) | 0 errors / 38 source files |
-| `python -m ruff check src/ tests/` | All checks passed |
-| `python -m ruff format --check src/ tests/` | 58 files formatted / 0 drift |
-| `python -m pytest tests/ -q` | 213 passed / 0 failed / 0 skipped in ~2.6s |
-| `git log --oneline` | 1 commit (`feat: initial public release`) |
+| "43/43 tests passing" | 219/219 passing (2.97s) |
+| P1 stratified sampling pending | Implemented in `correlation_agent._stratified_sample` with tier quotas + round-robin |
+| P2 TCPConnector pending | Implemented in `base_client.__aenter__` (limit=20, keepalive=30) |
+| P3 ServerDisconnectedError retry pending | Implemented in `base_client` retry decorator |
+| P4 `NormalizationPipeline.dedup()` pending | Implemented; swarm.py calls the method |
+| Session log ends at Session 6 (V2 build) | Repo has Session 7 (public release, hardening) and Session 8 (STATUS.md) commits |
+| `enrichments_applied` idempotency pattern | Undocumented in CLAUDE.md; documented in STATUS.md |
+| Immutable-enrichment overlay (`enriched_severity`/`enriched_tags`) | Undocumented in CLAUDE.md; documented in `threat.py` comment at line 180-188 |
 
 ---
 
-## § Prioritised backlog (post-patch)
+## § Recon Appendix — Technical Inventory
 
-### P1 — this week
+### Largest source files
+`src/agents/report_coordinator.py` (430 LOC) · `src/api/app.py` (~385) · `src/graph/swarm.py` (~290) · `src/agents/correlation_agent.py` (~235).
 
-- **P1-A: Snapshot `original_confidence` on `NormalizedThreat`** so the IOC sidecar can emit pre-enrichment confidence for `scripts/extract_iocs.py`'s firewall gate (enrichment-informed confidence is the current default — operators who want raw provider confidence have no path). Ref: `src/agents/report_coordinator.py:89`.
-- **P1-B: Enrichment-agent idempotency flag.** EPSS/VT/Shodan read `effective_severity` when deciding whether to overlay a severity bump. A second enrichment pass would see already-enriched records. Add an `_enriched` flag on `NormalizedThreat` (default `False`) so agents can short-circuit. Ref: `src/agents/epss_enrichment.py:51-53`, `virustotal_enrichment.py:66-69`.
-- **P1-C: mypy advisory → blocking in CI.** The GitHub Actions workflow has `continue-on-error: true` on the mypy step. With mypy strict now at 0 errors, promoting to blocking preserves the invariant. Ref: `.github/workflows/ci.yml`.
+### Dependency posture
+All pinned to major-version boundaries. No known active CVEs.
 
-### P2 — this month
+| Package | Version | Risk |
+|---|---|:-:|
+| `anthropic` | 0.95.0 | Low |
+| `aiohttp` | 3.13.5 | Low |
+| `pydantic` | 2.13.1 | Low |
+| `langgraph` | 1.1.6 | Low |
+| `fastapi`, `uvicorn`, `aiosqlite`, `structlog` | — | Low |
 
-- **P2-A: Split `report_coordinator.py` into `report_markdown.py` + `ioc_sidecar.py` + `ecs_emitter.py`** — three concerns, 420 LOC.
-- **P2-B: End-to-end integration test against Docker Elastic + Wazuh** — new CI job with docker-compose, not part of the blocking suite.
-- **P2-C: `_to_state` generic field-walker** — replace the three isinstance branches with a `SwarmState.model_fields`-driven coercer. Scales to N rehydration types without further edits.
-- **P2-D: Per-node TypedDict returns** — queued for completeness even though the orchestrator rejected it as a P0. If a future maintainer finds themselves fixing a silent key typo, promote this.
+### Env var inventory
+`ANTHROPIC_API_KEY`, `NVD_API_KEY`, `OTX_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `SHODAN_API_KEY`, `GITHUB_TOKEN`, `TIA_API_KEY`, `TIA_CORS_ORIGINS`, `TIA_API_HOST` (deployment).
+
+### Test/source ratio
+21 test files · 38 source files · ratio 0.55. Healthy for a Python swarm project.
+
+### Git hygiene
+3 clean commits on `main` — `feat:` (initial release) → `chore(hardening):` (post-release polish) → `docs:` (STATUS.md). Conventional-commit discipline. No `main` pushes mid-work.
+
+### Code-smell sweep
+One `except Exception:` in `src/integrations/es_indexer.py:75` worth narrowing (see P2). No `print()` in async paths. No `time.sleep`/`requests`/`urllib` in async code. Zero hardcoded secrets.
 
 ---
 
-## § How to verify from a clean clone
+## § Security Appendix
 
-```bash
-pip install -e ".[dev]"
-pre-commit run --all-files                 # ruff + hygiene hooks
-pre-commit run mypy --hook-stage manual    # strict type check
-python -m pytest tests/ -q                 # 213 pass
-python main.py --dry-run                   # env + config validated
-docker build -t threat-intel .             # multi-stage image
+| Area | Posture | Note |
+|---|---|---|
+| Secrets in source | ✓ clean | Zero hardcoded keys; `.env` gitignored; `git log --all -- .env` empty |
+| `.env` perms | ⚠ 640 | Group-readable; recommend 600 (P1-5) |
+| CORS | ✓ strict | Wildcards explicitly stripped in `src/api/app.py:42` |
+| API-key compare | ✓ timing-safe | `secrets.compare_digest` |
+| Auth enforcement | ✗ optional fallback | P0-3: unset env → dev-mode bypass |
+| Prompt-injection | ~ medium seam | `tool_choice` strong; unbounded `title`/`description` = see P1-1 |
+| Async resource leaks | ✓ clean | `async with` correctly used on clients and aiosqlite |
+| SSRF | ✓ none | No user-supplied URL fetch endpoints |
+| Rate-limit defence | ✓ guarded | `MAX_RETRY_AFTER_SECONDS=60` blocks hostile `Retry-After` (Session 5 fix) |
+
+---
+
+## § Patch Log
+
+**No patches applied in this pass.**
+
+Per user operating rule — *"Plan before implementing. State the plan. Get confirmation. Then act."* — the patch-agent was **not** spawned. P0 fixes are gated on explicit human approval.
+
+When you authorise, the patch flow is:
+1. Spawn `patch-agent` in an isolated worktree with **only P0-1, P0-2, P0-3**.
+2. patch-agent runs tests after each change; stops on red.
+3. `verify-agent` re-runs built-in `/audit` to confirm green.
+4. Orchestrator reports final health + diff summary.
+5. Human reviews and `git commit` — no auto-push.
+
+---
+
+## § Terminal Summary
+
 ```
-
-Four blocking commands + one optional Docker build. All should exit 0 on a clean environment with `.env` populated (or the dry-run path when keys are absent).
-
----
-
-*End of report. Per-fix diffs in `PATCHES.md`. Historical diffs in `CHANGELOG.md`. Session trace in git log.*
+╔══════════════════════════════════════════════════════════════╗
+║       ORCHESTRATION COMPLETE — OPUS 4.6 AGENTIC RUN          ║
+╠══════════════════════════════════════════════════════════════╣
+║  Composite Score:    8.7 / 10                                ║
+║  Engineer Profile:   Principal / Staff — AI orchestration    ║
+║                      and async platform engineering          ║
+║  Root Cause Gap:     Documentation drift + optional-auth     ║
+║                      escape hatch                            ║
+║  Hire Signal:        Strong Pass                             ║
+║  Best-Fit Role:      AI orchestration · detection eng        ║
+╠══════════════════════════════════════════════════════════════╣
+║  Subagents run:      3  (audit · recon · security)           ║
+║  P0 actions:         3  (ruff · CLAUDE.md · TIA_API_KEY)     ║
+║  P1 actions:         5  (coverage · bounds · snapshots ...)  ║
+║  P2 actions:         6  (typedicts · docs · pre-commit ...)  ║
+║  Patches applied:    0  (gated on user approval)             ║
+╠══════════════════════════════════════════════════════════════╣
+║  #1 Remaining Action:                                        ║
+║  Approve P0 list → orchestrator spawns patch-agent in        ║
+║  isolated worktree, fixes ruff + CLAUDE.md + TIA_API_KEY     ║
+║  enforcement, verify-agent re-runs /audit, human reviews.    ║
+╚══════════════════════════════════════════════════════════════╝
+```

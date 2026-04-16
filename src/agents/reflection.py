@@ -38,12 +38,18 @@ REFLECTION_TOOL = {
         "properties": {
             "confidence_score": {
                 "type": "number",
-                "description": "Overall report confidence 0.0-1.0. Consider: source diversity, threat count, cluster coherence.",
+                "description": (
+                    "Overall report confidence 0.0-1.0. Consider: source diversity, "
+                    "threat count, cluster coherence."
+                ),
             },
             "gaps_identified": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Intelligence gaps — missing data sources, low coverage areas, unverified claims.",
+                "description": (
+                    "Intelligence gaps — missing data sources, low coverage areas, "
+                    "unverified claims."
+                ),
             },
             "low_confidence_clusters": {
                 "type": "array",
@@ -57,7 +63,9 @@ REFLECTION_TOOL = {
             },
             "analyst_notes": {
                 "type": "string",
-                "description": "2-3 sentence meta-assessment of the report quality and key caveats.",
+                "description": (
+                    "2-3 sentence meta-assessment of the report quality and key caveats."
+                ),
             },
         },
         "required": ["confidence_score", "gaps_identified", "analyst_notes"],
@@ -93,7 +101,8 @@ async def reflection_agent(state: SwarmState, config: dict[str, Any]) -> dict[st
 
         # Summarise report for reflection prompt
         cluster_summary = "\n".join(
-            f"- {c.get('cluster_name', '?')} [{c.get('severity', '?')}]: {c.get('narrative', '')[:100]}"
+            f"- {c.get('cluster_name', '?')} [{c.get('severity', '?')}]: "
+            f"{c.get('narrative', '')[:100]}"
             for c in report.threat_clusters
         )
         sources_str = ", ".join(report.sources_queried)
@@ -115,8 +124,9 @@ async def reflection_agent(state: SwarmState, config: dict[str, Any]) -> dict[st
                         f"Severity breakdown: {severity_str}\n"
                         f"Clusters:\n{cluster_summary}\n\n"
                         f"Executive summary (first 300 chars): {report.executive_summary[:300]}\n\n"
-                        "Be critical. Identify: missing sources, weak evidence, over-confident claims, "
-                        "clusters that need more data, and genuinely well-supported findings."
+                        "Be critical. Identify: missing sources, weak evidence, "
+                        "over-confident claims, clusters that need more data, "
+                        "and genuinely well-supported findings."
                     ),
                 }
             ],

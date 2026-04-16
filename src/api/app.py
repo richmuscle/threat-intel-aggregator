@@ -29,22 +29,40 @@ DB_PATH = "output/reports.db"
 
 # ── Auth + CORS ───────────────────────────────────────────────────────────────
 #
-# `TIA_API_KEY` gates every write + read endpoint. If it's unset we log a
-# loud warning and *still* require a header, which forces explicit opt-in
-# for unauthenticated local runs (set `TIA_API_KEY=` to the empty string to
-# disable — but that path is a deliberate escape hatch, not the default).
+# Default behaviour: fail-fast at startup when `TIA_API_KEY` is unset. The
+# server refuses to start (uvicorn exits) unless either the key is set or
+# `TIA_AUTH_MODE=disabled` is set as an explicit dev opt-out. Loopback binds
+# are NOT exempt — the contract is the same everywhere to avoid "it worked in
+# dev" gaps. Never ship `TIA_AUTH_MODE=disabled` to production.
 #
 # `TIA_CORS_ORIGINS` is a comma-separated origin list. Default is localhost
 # only; wildcards are rejected to stop an accidental `*` in prod.
 
-_API_KEY_ENV = os.getenv("TIA_API_KEY")
+
+def _current_api_key() -> str | None:
+    """Read TIA_API_KEY at call time (enables monkeypatch in tests)."""
+    return os.getenv("TIA_API_KEY")
+
+
+def _current_auth_mode() -> str:
+    """Read TIA_AUTH_MODE at call time. Returns lower-case value or empty string."""
+    return os.getenv("TIA_AUTH_MODE", "").lower()
+
+
+def _log_auth_status_at_startup() -> None:
+    """Log an ERROR when auth is explicitly disabled. Called from lifespan()."""
+    if _current_api_key() is None and _current_auth_mode() == "disabled":
+        logger.error(
+            "tia_auth_explicitly_disabled",
+            message=(
+                "Auth is DISABLED via TIA_AUTH_MODE=disabled. "
+                "Do not ship this config."
+            ),
+        )
+
+
 _CORS_ORIGINS_ENV = os.getenv("TIA_CORS_ORIGINS", "http://localhost:3000,http://localhost:8000")
 CORS_ORIGINS = [o.strip() for o in _CORS_ORIGINS_ENV.split(",") if o.strip() and o.strip() != "*"]
-if not _API_KEY_ENV:
-    logger.warning(
-        "tia_api_key_unset",
-        message="TIA_API_KEY not set — API is unauthenticated. Set TIA_API_KEY in .env for any network-exposed run.",
-    )
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -54,12 +72,17 @@ async def require_api_key(provided: str | None = Security(_api_key_header)) -> N
     Reject requests without a matching `X-API-Key` header.
 
     Uses `secrets.compare_digest` to avoid a timing-side-channel on the
-    comparison. When `TIA_API_KEY` is unset the check passes (dev mode) —
-    lifespan logs a warning at startup so this doesn't silently ship.
+    comparison. Set `TIA_AUTH_MODE=disabled` to bypass auth in dev. If
+    `TIA_API_KEY` is unset without that opt-out, returns 503 as defence-in-depth
+    (lifespan fail-fast should have prevented the server from starting).
     """
-    if not _API_KEY_ENV:
-        return  # dev mode — warning already logged at import time
-    if not provided or not _py_secrets.compare_digest(provided, _API_KEY_ENV):
+    auth_mode = _current_auth_mode()
+    if auth_mode == "disabled":
+        return  # explicit dev opt-out
+    api_key = _current_api_key()
+    if api_key is None:
+        raise HTTPException(status_code=503, detail="authentication misconfigured")
+    if not provided or not _py_secrets.compare_digest(provided, api_key):
         raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
 
 
@@ -68,6 +91,12 @@ async def require_api_key(provided: str | None = Security(_api_key_header)) -> N
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    if _current_api_key() is None and _current_auth_mode() != "disabled":
+        raise RuntimeError(
+            "TIA_API_KEY must be set. "
+            "Set TIA_AUTH_MODE=disabled to explicitly opt out of auth (dev only)."
+        )
+    _log_auth_status_at_startup()
     Path("output").mkdir(exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         # WAL mode lets concurrent readers coexist with one writer — matters
@@ -380,6 +409,6 @@ async def health() -> dict[str, Any]:
         overall = "degraded"
 
     # Auth gate status — "enabled" when TIA_API_KEY is set, else "dev-mode".
-    components["api_auth"] = "enabled" if _API_KEY_ENV else "dev-mode"
+    components["api_auth"] = "enabled" if _current_api_key() else "dev-mode"
 
     return {"status": overall, "version": app.version, "components": components}

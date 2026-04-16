@@ -19,7 +19,7 @@
 | **Purpose** | AI swarm-powered threat intelligence correlation platform |
 | **Portfolio role** | AI orchestration · async systems · security domain · typed contracts · test discipline |
 | **Python** | 3.11+ required (3.12.3 on ferro43) |
-| **Test status** | 43/43 passing (verified session 4) |
+| **Test status** | 219/219 passing · 75% coverage (verified session 8) |
 | **Dry-run** | clean (verified session 4) |
 
 ---
@@ -75,6 +75,37 @@ CVSS v3.1 STIX/JSON  + AbuseIPDB    + GreyNoise
 | **Full state returned every node** | `StateGraph(dict)` is last-write-wins. Partial returns silently drop keys. Every node returns `_state_to_dict(state.model_copy(update={...}))`. |
 | **SHA-256 content hash dedup** | Same CVE in NVD + CISA KEV → one `NormalizedThreat` with merged sources. |
 | **ECS-aligned SIEM output** | Maps to `event.kind`, `rule.name`, `threat.technique.id`, `vulnerability.id` — drop into Elastic or Wazuh. |
+
+---
+
+## Load-Bearing Invariants
+
+These five patterns are load-bearing. Breaking any one will silently corrupt data
+or make the pipeline non-deterministic. Do not change them without an ADR.
+
+1. **Immutable enrichment overlay** — enrichment agents (EPSS, VirusTotal, Shodan,
+   GitHub Advisory) never mutate `severity` or `tags` on `NormalizedThreat` directly.
+   They set `enriched_severity` / `enriched_tags`. Consumers read `effective_severity` /
+   `effective_tags` (computed properties). This protects the `content_hash` SHA-256 dedup:
+   a re-run must not produce new hashes for the same threat.
+
+2. **`enrichments_applied` idempotency list** — every enrichment agent appends its stable
+   name (matching `@enrichment_agent(name=...)`) to `NormalizedThreat.enrichments_applied`
+   and skips if its name is already present. Makes future remediation loops safe from
+   double-bumps on a second enrichment pass.
+
+3. **Full-state-return** — every LangGraph node returns the full
+   `_state_to_dict(state.model_copy(update=...))`. Partial-dict returns silently drop keys
+   because `StateGraph(dict)` is last-write-wins. Documented in `src/graph/swarm.py`.
+
+4. **Reflection is diagnostic, not remedial** — `reflection_agent` emits
+   `confidence_score` + gap analysis but does NOT loop back into enrichment. A conditional
+   edge from reflection to enrich would break dedup determinism (enrichments are not
+   idempotent on a second pass yet). See `src/agents/reflection.py:7-17` docstring.
+
+5. **`MAX_RETRY_AFTER_SECONDS = 60`** — `src/tools/base_client.py` caps hostile
+   `Retry-After` headers. AbuseIPDB once returned ~19 hr which stalled the whole swarm;
+   the cap forces graceful 429 degradation instead. Session 5 fix.
 
 ---
 
@@ -147,82 +178,47 @@ LangGraph 1.1.x only injects config when annotation is `RunnableConfig`.
 
 ---
 
+## Applied Upgrades
+
+#### Stratified prompt sampling (was P1)
+✓ Applied — session 5 (2026-04-16)
+**Now lives in:** `src/agents/correlation_agent.py::_stratified_sample`
+Tier quotas (CRITICAL 40%, HIGH 30%, MEDIUM 20%, LOW+INFO+UNKNOWN 10%) with
+round-robin by `threat_type` within each tier and rollover of unused slots.
+
+#### TCPConnector connection pooling (was P2)
+✓ Applied — session 5 (2026-04-16)
+**Now lives in:** `src/tools/base_client.py::__aenter__`
+`TCPConnector(limit=20, keepalive_timeout=30, enable_cleanup_closed=True)`.
+
+#### ServerDisconnectedError retry decorator (was P3)
+✓ Applied — session 5 (2026-04-16)
+**Now lives in:** `src/tools/base_client.py` — `retry_on_disconnect` decorator
+applied to `BaseAPIClient.get()`.
+
+#### NormalizationPipeline.dedup() method (was P4)
+✓ Applied — session 5 (2026-04-16)
+**Now lives in:** `src/pipeline/normalizer.py::NormalizationPipeline.dedup()`;
+called from `src/graph/swarm.py` `_normalization_node`.
+
+---
+
 ## Pending Upgrades
 
-> ⚠ AUDIT NOTE: Session 3 summary claimed P1–P4 were applied.
-> Grep of actual files confirms they were NOT. This list reflects reality.
+### P1 — Reflection active-remediation loop
+**Blocked by:** dedup idempotency not yet guaranteed on second enrichment pass.
+See Load-Bearing Invariants #4 above.
+**What:** Add conditional edge `reflection → enrich` that triggers a targeted
+re-enrichment pass when `confidence_score < 0.6`. Requires enrichment agents to
+fully honour the `enrichments_applied` idempotency list first (invariant #2).
+**Files:** `src/graph/swarm.py` routing, `src/agents/reflection.py`
 
-### P1 — Stratified prompt sampling
-**File:** `src/agents/correlation_agent.py`
-**What:** Replace the simple `sorted()[:80]` in `_build_prompt()` with a two-stage
-stratified sampler: severity tier quotas (CRITICAL 40%, HIGH 30%, MEDIUM 20%,
-LOW+INFO+UNKNOWN 10%) then round-robin by `threat_type` within each tier.
-Leftover slots roll down to next tier.
-**Why:** On large CVE-heavy runs, 80 MEDIUM CVEs crowd out CRITICAL IOCs.
-```python
-def _stratified_sample(threats: list[NormalizedThreat], cap: int = 80) -> list[NormalizedThreat]:
-    tiers = {"CRITICAL": 0.40, "HIGH": 0.30, "MEDIUM": 0.20}
-    # bucket by severity, round-robin by threat_type within tier, rollover unused
-```
-
-### P2 — TCPConnector connection pooling
-**File:** `src/tools/base_client.py` — `__aenter__`
-**What:**
-```python
-connector = aiohttp.TCPConnector(
-    limit=20,
-    keepalive_timeout=30,
-    enable_cleanup_closed=True,
-)
-self._session = aiohttp.ClientSession(..., connector=connector)
-```
-**Why:** Default connector creates unlimited connections. 4 parallel agents × N
-requests = connection exhaustion under load.
-
-### P3 — ServerDisconnectedError retry decorator
-**File:** `src/tools/base_client.py`
-**What:** Add `@retry_on_disconnect(retries=2, backoff=0.5)` decorator and apply
-to `BaseAPIClient.get()`. Distinct from HTTP-level retries already in the inner loop.
-```python
-def retry_on_disconnect(retries: int = 2, backoff: float = 0.5):
-    def decorator(fn):
-        @functools.wraps(fn)
-        async def wrapper(*args, **kwargs):
-            for attempt in range(retries + 1):
-                try:
-                    return await fn(*args, **kwargs)
-                except aiohttp.ServerDisconnectedError:
-                    if attempt == retries: raise
-                    await asyncio.sleep(backoff * 2 ** attempt)
-        return wrapper
-    return decorator
-```
-
-### P4 — NormalizationPipeline.dedup() method
-**File:** `src/pipeline/normalizer.py`
-**What:** Add `dedup(already_normalized: list[NormalizedThreat])` method for
-the case where agents return `NormalizedThreat` directly (no raw-type conversion).
-Use it in `_normalization_node` in `swarm.py` instead of the inline dedup loop.
-**Why:** DRY — dedup logic currently duplicated between `normalizer.py` and `swarm.py`.
-
-### P5 — Sub-agent supervisor + reflection loop (PLTR-level)
-**What:** Upgrade flat 4-agent fan-out to a true hierarchical swarm:
-- **Supervisor agent** — keyword analysis node that dynamically decides which
-  sub-agents to activate (e.g. cloud keywords → spawn AWS/GCP advisory agent)
-- **Reflection agent** — post-correlation LLM pass critiques report quality,
-  identifies gaps, optionally re-triggers targeted agents
-- **Memory agent** — persists threat clusters across runs for delta reporting
-- **Conditional edge** — `should_continue()` in LangGraph loops back to ingest
-  if correlation confidence score is below threshold
-**Files:** New `src/agents/supervisor.py`, `src/agents/reflection.py`,
-`src/graph/swarm.py` routing logic
-
-### P6 — Unit test coverage gaps
+### P2 — Unit test coverage gaps
 **Target files and current coverage:**
-- `src/tools/base_client.py` — 41% → need rate limiter + retry tests
-- `src/tools/attack_client.py` — 28% → need STIX parsing fixture test
-- `src/agents/correlation_agent.py` — 29% → need prompt builder unit tests
-- `src/agents/report_coordinator.py` — 19% → need output file tests
+- `src/tools/shodan_client.py` — 23% → need key-in-query + response parsing tests
+- `src/tools/virustotal_client.py` — 19% → need IOC enrichment fixture tests
+- `src/agents/correlation_agent.py` — need `_stratified_sample` unit tests
+- `src/agents/report_coordinator.py` — need output file write tests
 
 ---
 
@@ -237,7 +233,7 @@ Read CLAUDE.md completely first, then run this audit:
 
 2. TEST SUITE
    python -m pytest tests/ -q --no-header 2>&1 | tail -3
-   PASS = "43 passed" or higher
+   PASS = "219 passed" or higher
 
 3. DRY RUN
    python main.py --dry-run 2>&1 | grep -E "✓|✗|Error"
@@ -259,7 +255,7 @@ Read CLAUDE.md completely first, then run this audit:
 
 6. PENDING COUNT
    grep -c "^### P[0-9]" CLAUDE.md
-   Report number remaining
+   Report number remaining — expected 2 (P1 reflection loop, P2 coverage gaps)
 
 Report: HEALTH = GREEN (all pass) / YELLOW (tests pass, issues elsewhere) / RED (test failures)
 Then confirm which Pending Upgrades are next and begin work.
@@ -412,3 +408,17 @@ supervisor → [cve_scraper, attack_mapper, ioc_extractor, feed_aggregator] (par
 - `GITHUB_TOKEN` — optional, higher rate limits on advisory API
 
 **Cost to run V2:** $0/month (free APIs only). Add Shodan at $49/mo for full internet exposure intel.
+
+### Session 7 — Public release + post-release hardening
+**Date:** 2026-04-16
+Initial public release to github.com/richmuscle/threat-intel-aggregator.
+Post-release audit polish: security hardening, type-check pass, deploy docs, CI scaffold.
+STATUS.md added as single-page handoff.
+Test count grew to 219/219. Coverage 75%.
+
+### Session 8 — Agentic /audit + P0 fixes
+**Date:** 2026-04-16
+Ran Palantir-style /audit pipeline (audit + recon + security subagents in parallel).
+Composite score: 8.7/10. Hire signal: Strong Pass.
+P0 fixes applied: ruff E501 cleanup (12 violations), CLAUDE.md freshness, TIA_API_KEY fail-fast auth.
+P1/P2 items documented in AUDIT_REPORT.md — not applied in this session.

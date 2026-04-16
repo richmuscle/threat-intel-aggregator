@@ -2,7 +2,8 @@
 Supervisor Agent — dynamic swarm routing.
 Analyzes keywords and decides which agents to activate and with what parameters.
 Runs BEFORE the parallel ingest fan-out.
-Example: "LockBit" → activate ransomware IOC mode, increase KEV limit, focus ATT&CK on impact tactics.
+Example: "LockBit" → activate ransomware IOC mode, increase KEV limit,
+focus ATT&CK on impact tactics.
 """
 
 from __future__ import annotations
@@ -20,7 +21,9 @@ logger = structlog.get_logger(__name__)
 
 SUPERVISOR_TOOL = {
     "name": "configure_swarm",
-    "description": "Configure which agents to activate and their parameters based on threat keywords.",
+    "description": (
+        "Configure which agents to activate and their parameters based on threat keywords."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -39,7 +42,10 @@ SUPERVISOR_TOOL = {
             "activate_agents": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "List of agents to activate: cve_scraper, attack_mapper, ioc_extractor, feed_aggregator, epss, virustotal, github_advisory, shodan",
+                "description": (
+                    "List of agents to activate: cve_scraper, attack_mapper, "
+                    "ioc_extractor, feed_aggregator, epss, virustotal, github_advisory, shodan"
+                ),
             },
             "cve_days_back": {
                 "type": "integer",
@@ -103,7 +109,8 @@ async def supervisor_agent(state: SwarmState, config: dict[str, Any]) -> dict[st
                         "epss (exploit probability), virustotal (malware families), "
                         "github_advisory (supply chain), shodan (exposed services)\n\n"
                         "Configure parameters to maximise signal for these specific keywords. "
-                        "For ransomware: activate all agents, focus on impact/exfiltration tactics. "
+                        "For ransomware: activate all agents, "
+                        "focus on impact/exfiltration tactics. "
                         "For APT: increase CVE lookback, focus on persistence/lateral-movement. "
                         "For supply chain: prioritise github_advisory and CVE scraper."
                     ),

@@ -214,24 +214,23 @@ def _build_prompt(threats: list[NormalizedThreat], run_id: str) -> str:
         for t in sampled
     )
 
-    return f"""You are a senior threat intelligence analyst. Analyze the following normalized threat intelligence data from run {run_id}.
-
-SEVERITY BREAKDOWN: {json.dumps(severity_counts)}
-THREAT TYPE BREAKDOWN: {json.dumps(type_counts)}
-TOTAL THREATS: {len(threats)}  (sampled {len(sampled)} for this prompt)
-
-THREAT DATA:
-{threat_summaries}
-
-Correlate these threats across sources. Identify clusters of related activity, critical vulnerabilities requiring urgent patching, and active IOCs.
-Produce SIEM-ready alerts aligned with Elastic Common Schema conventions.
-Focus on actionable intelligence — avoid generic advice.
-
-Patch priority: when recommending remediation, explicitly call out the highest-
-CVSS CVEs by ID ordered worst-first; downstream tooling will cross-reference
-those IDs against the NVD CVSS table for a sorted patch table. When an IOC
-has type domain or ipv4, include it verbatim in a relevant cluster's
-threat_ids so firewall/DNS blocking tooling picks it up."""
+    return (
+        f"You are a senior threat intelligence analyst. Analyze the following normalized "
+        f"threat intelligence data from run {run_id}.\n\n"
+        f"SEVERITY BREAKDOWN: {json.dumps(severity_counts)}\n"
+        f"THREAT TYPE BREAKDOWN: {json.dumps(type_counts)}\n"
+        f"TOTAL THREATS: {len(threats)}  (sampled {len(sampled)} for this prompt)\n\n"
+        f"THREAT DATA:\n{threat_summaries}\n\n"
+        "Correlate these threats across sources. Identify clusters of related activity, "
+        "critical vulnerabilities requiring urgent patching, and active IOCs.\n"
+        "Produce SIEM-ready alerts aligned with Elastic Common Schema conventions.\n"
+        "Focus on actionable intelligence — avoid generic advice.\n\n"
+        "Patch priority: when recommending remediation, explicitly call out the highest-\n"
+        "CVSS CVEs by ID ordered worst-first; downstream tooling will cross-reference\n"
+        "those IDs against the NVD CVSS table for a sorted patch table. When an IOC\n"
+        "has type domain or ipv4, include it verbatim in a relevant cluster's\n"
+        "threat_ids so firewall/DNS blocking tooling picks it up."
+    )
 
 
 async def correlation_agent(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
