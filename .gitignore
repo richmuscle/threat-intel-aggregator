@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment & secrets
+.env
+*.env
+
+# Output (generated — don't commit intel reports)
+output/*.md
+output/*.json
+output/*.ndjson
+output/*.db
+output/blocklist_*.txt
+logs/*.log
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# LangGraph
+.langgraph/
+
+# Claude Code session-local
+.claude/
+.aider*
+
+# OS / misc
+.envrc.local
+*.bak
+*.tmp
