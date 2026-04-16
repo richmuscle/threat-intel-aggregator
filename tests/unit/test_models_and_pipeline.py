@@ -1,39 +1,38 @@
 """Unit tests — models and normalization pipeline."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from src.models import (
-    CVERecord,
+    AgentResult,
     ATTACKTechnique,
+    CVERecord,
     IOCRecord,
-    NormalizedThreat,
     Severity,
+    SwarmState,
     ThreatFeedItem,
     ThreatSource,
-    SwarmState,
-    AgentResult,
 )
 from src.pipeline.normalizer import (
     NormalizationPipeline,
     normalize_cve,
     normalize_ioc,
     normalize_technique,
-    normalize_feed_item,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def sample_cve() -> CVERecord:
     return CVERecord(
         cve_id="CVE-2024-12345",
         description="A critical remote code execution vulnerability in ExampleLib.",
-        published=datetime(2024, 1, 15, tzinfo=timezone.utc),
-        last_modified=datetime(2024, 1, 20, tzinfo=timezone.utc),
+        published=datetime(2024, 1, 15, tzinfo=UTC),
+        last_modified=datetime(2024, 1, 20, tzinfo=UTC),
         cvss_v3_score=9.8,
         cvss_v3_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
         cwe_ids=["CWE-78"],
@@ -75,7 +74,7 @@ def sample_feed_item() -> ThreatFeedItem:
         title="CVE-2024-12345: ExampleLib RCE Actively Exploited",
         description="CISA reports active exploitation of CVE-2024-12345.",
         url="https://www.cisa.gov/kev/CVE-2024-12345",
-        published=datetime(2024, 1, 22, tzinfo=timezone.utc),
+        published=datetime(2024, 1, 22, tzinfo=UTC),
         severity=Severity.HIGH,
         cve_refs=["CVE-2024-12345"],
         tags=["kev", "actively-exploited"],
@@ -84,6 +83,7 @@ def sample_feed_item() -> ThreatFeedItem:
 
 
 # ── Model tests ───────────────────────────────────────────────────────────────
+
 
 class TestCVERecord:
     def test_severity_derived_from_score(self, sample_cve: CVERecord) -> None:
@@ -174,6 +174,7 @@ class TestNormalizedThreat:
 
 
 # ── Normalization tests ───────────────────────────────────────────────────────
+
 
 class TestNormalizeCVE:
     def test_maps_cve_id_correctly(self, sample_cve: CVERecord) -> None:
@@ -274,6 +275,7 @@ class TestNormalizationPipeline:
 
 
 # ── SwarmState tests ──────────────────────────────────────────────────────────
+
 
 class TestSwarmState:
     def test_total_raw_records_computed(self) -> None:

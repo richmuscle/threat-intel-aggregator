@@ -11,6 +11,7 @@ These tests lock in the contract documented in the docstring:
                      confidence  < 0.5 → LOW
     malicious=True floors result at HIGH regardless of the above.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -20,7 +21,7 @@ from src.pipeline.normalizer import ioc_severity, normalize_ioc
 
 
 def _ioc(**kwargs) -> IOCRecord:
-    defaults = dict(ioc_type="ipv4", value="1.2.3.4", sources=[ThreatSource.OTX])
+    defaults = {"ioc_type": "ipv4", "value": "1.2.3.4", "sources": [ThreatSource.OTX]}
     defaults.update(kwargs)
     return IOCRecord(**defaults)
 
@@ -30,13 +31,13 @@ class TestAbuseScoreMapping:
         "score,expected",
         [
             (100, Severity.CRITICAL),
-            (90,  Severity.CRITICAL),
-            (89,  Severity.HIGH),
-            (70,  Severity.HIGH),
-            (69,  Severity.MEDIUM),
-            (40,  Severity.MEDIUM),
-            (39,  Severity.LOW),
-            (0,   Severity.LOW),
+            (90, Severity.CRITICAL),
+            (89, Severity.HIGH),
+            (70, Severity.HIGH),
+            (69, Severity.MEDIUM),
+            (40, Severity.MEDIUM),
+            (39, Severity.LOW),
+            (0, Severity.LOW),
         ],
     )
     def test_abuse_score_thresholds(self, score: int, expected: Severity) -> None:
@@ -47,14 +48,14 @@ class TestConfidenceMapping:
     @pytest.mark.parametrize(
         "conf,expected",
         [
-            (1.0,  Severity.CRITICAL),
-            (0.9,  Severity.CRITICAL),
+            (1.0, Severity.CRITICAL),
+            (0.9, Severity.CRITICAL),
             (0.89, Severity.HIGH),
-            (0.7,  Severity.HIGH),
+            (0.7, Severity.HIGH),
             (0.69, Severity.MEDIUM),
-            (0.5,  Severity.MEDIUM),
+            (0.5, Severity.MEDIUM),
             (0.49, Severity.LOW),
-            (0.0,  Severity.LOW),
+            (0.0, Severity.LOW),
         ],
     )
     def test_confidence_thresholds(self, conf: float, expected: Severity) -> None:
@@ -72,10 +73,7 @@ class TestMaliciousFloor:
 
     def test_malicious_with_abuse_score_medium_floors_high(self) -> None:
         # abuse_score 50 → MEDIUM, malicious floors at HIGH.
-        assert (
-            ioc_severity(_ioc(abuse_score=50, malicious=True))
-            == Severity.HIGH
-        )
+        assert ioc_severity(_ioc(abuse_score=50, malicious=True)) == Severity.HIGH
 
 
 class TestNormalizeIOCEnrichment:

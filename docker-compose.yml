@@ -1,0 +1,54 @@
+# Local dev compose — `docker compose up -d` gives you the API dashboard
+# on :8000 plus a CLI container sibling for one-shot swarm runs.
+#
+# Persistent state lives in named volumes so `docker compose down && up`
+# keeps reports and the SQLite cache. Wipe with `docker compose down -v`.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: threat-intel-aggregator:local
+    container_name: threat-intel-api
+    command: ["api"]
+    env_file:
+      # Keys arrive from .env — never commit .env, only .env.example.
+      # Absent keys degrade gracefully (see `--dry-run`).
+      - .env
+    environment:
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      LOG_FORMAT: "json"         # structured logs — pipe `docker logs` into jq.
+      LOG_LEVEL:  "INFO"
+    ports:
+      - "8000:8000"
+    volumes:
+      - tia-output:/app/output
+      - tia-logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      # Redundant with Dockerfile HEALTHCHECK but compose-readable — useful
+      # for `depends_on.condition: service_healthy` from a sibling service.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # One-shot swarm run. Start with: `docker compose run --rm cli --keywords ransomware`
+  # The `profiles` guard keeps it from auto-starting with `compose up`.
+  cli:
+    image: threat-intel-aggregator:local
+    container_name: threat-intel-cli
+    profiles: ["cli"]
+    command: ["cli", "--dry-run"]  # override via `compose run --rm cli cli <args>`
+    env_file:
+      - .env
+    volumes:
+      - tia-output:/app/output
+      - tia-logs:/app/logs
+
+volumes:
+  tia-output:
+  tia-logs:

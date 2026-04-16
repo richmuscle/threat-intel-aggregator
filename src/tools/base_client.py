@@ -2,17 +2,16 @@
 Base async HTTP client with exponential backoff, rate limiting, and structured logging.
 Every tool client inherits from this — no raw aiohttp usage elsewhere.
 """
+
 from __future__ import annotations
 
 import asyncio
 import functools
-import time
-from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
-
 import ipaddress
 import re
-from typing import Literal
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal, Self, TypeVar
 
 import aiohttp
 import structlog
@@ -32,15 +31,15 @@ logger = structlog.get_logger(__name__)
 # to short-circuit to `None` when validation fails.
 
 _DOMAIN_RE = re.compile(
-    r"^(?=.{1,253}$)"                            # total length ≤ 253
-    r"(?!-)[a-z0-9-]{1,63}(?<!-)"                # first label (no leading/trailing hyphen)
-    r"(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$"          # one or more additional labels
+    r"^(?=.{1,253}$)"  # total length ≤ 253
+    r"(?!-)[a-z0-9-]{1,63}(?<!-)"  # first label (no leading/trailing hyphen)
+    r"(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$"  # one or more additional labels
 )
 
 _HASH_RE: dict[int, re.Pattern[str]] = {
-    32: re.compile(r"^[a-f0-9]{32}$"),   # MD5
-    40: re.compile(r"^[a-f0-9]{40}$"),   # SHA1
-    64: re.compile(r"^[a-f0-9]{64}$"),   # SHA256
+    32: re.compile(r"^[a-f0-9]{32}$"),  # MD5
+    40: re.compile(r"^[a-f0-9]{40}$"),  # SHA1
+    64: re.compile(r"^[a-f0-9]{64}$"),  # SHA256
 }
 
 
@@ -73,6 +72,7 @@ def is_valid_hash(
     expected_len = {"md5": 32, "sha1": 40, "sha256": 64}[kind]
     return bool(_HASH_RE[expected_len].fullmatch(value))
 
+
 # Type alias for API keys that may come wrapped in SecretStr (from config
 # builders) or as a plain str (from tests / direct instantiation).
 SecretLike = SecretStr | str | None
@@ -92,6 +92,7 @@ def unwrap_secret(val: SecretLike) -> str | None:
         raw = val.get_secret_value()
         return raw or None
     return val or None
+
 
 DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 MAX_RETRIES = 3
@@ -119,6 +120,7 @@ def retry_on_disconnect(
     seen. `BaseAPIClient.get()` already handles HTTP-level retries; this
     covers the pre-HTTP case.
     """
+
     def _decorator(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         @functools.wraps(fn)
         async def _wrapper(*args: Any, **kwargs: Any) -> T:
@@ -130,10 +132,12 @@ def retry_on_disconnect(
                     last_exc = exc
                     if attempt == retries:
                         break
-                    await asyncio.sleep(backoff * (2 ** attempt))
+                    await asyncio.sleep(backoff * (2**attempt))
             assert last_exc is not None
             raise last_exc
+
         return _wrapper
+
     return _decorator
 
 
@@ -179,7 +183,7 @@ class BaseAPIClient:
         self._rate_limiter = RateLimiter(self.calls_per_second)
         self._log = logger.bind(client=self.__class__.__name__)
 
-    async def __aenter__(self) -> BaseAPIClient:
+    async def __aenter__(self) -> Self:
         # Bounded connection pool — prevents unbounded fan-out when four parallel
         # agents each hit multiple endpoints, and keep-alive amortises TCP/TLS
         # cost when the same API is hit repeatedly within a run.
@@ -209,8 +213,15 @@ class BaseAPIClient:
         path: str,
         params: dict[str, Any] | None = None,
         retries: int = MAX_RETRIES,
-    ) -> dict[str, Any] | list[Any]:
+    ) -> Any:
         """GET with automatic retry + exponential backoff.
+
+        Returns whatever `response.json()` produced — typically `dict[str, Any]`
+        but occasionally `list[Any]` (NVD 2.0, CISA KEV, EPSS top-exploited).
+        Typed as `Any` so each caller narrows on its own shape; callers that
+        always get a dict back can just `.get(...)`, callers that get a list
+        iterate directly. A `dict | list` union would force every call site
+        into an `isinstance` dance with no real safety gain.
 
         HTTP-level retries (429, 5xx, timeouts) are handled here. Socket-level
         `ServerDisconnectedError` — which fires *before* any response — is
@@ -226,7 +237,7 @@ class BaseAPIClient:
                     duration_ms = (time.monotonic() - t0) * 1000
                     if resp.status == 429:
                         raw_retry_after = int(
-                            resp.headers.get("Retry-After", BASE_BACKOFF * 2 ** attempt)
+                            resp.headers.get("Retry-After", BASE_BACKOFF * 2**attempt)
                         )
                         if raw_retry_after > MAX_RETRY_AFTER_SECONDS:
                             # Providers occasionally send absurd values (hours).
@@ -240,9 +251,7 @@ class BaseAPIClient:
                                 cap=MAX_RETRY_AFTER_SECONDS,
                             )
                             resp.raise_for_status()
-                        self._log.warning(
-                            "rate_limited", path=path, retry_after=raw_retry_after
-                        )
+                        self._log.warning("rate_limited", path=path, retry_after=raw_retry_after)
                         await asyncio.sleep(raw_retry_after)
                         continue
                     if resp.status >= 500:
@@ -258,9 +267,11 @@ class BaseAPIClient:
                         duration_ms=round(duration_ms, 1),
                     )
                     return data
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, aiohttp.ClientError) as exc:
                 if attempt == retries:
-                    self._log.error("request_failed", path=path, error=str(exc), attempts=attempt + 1)
+                    self._log.error(
+                        "request_failed", path=path, error=str(exc), attempts=attempt + 1
+                    )
                     raise
                 backoff = BASE_BACKOFF * 2**attempt
                 self._log.warning("retrying", path=path, attempt=attempt + 1, backoff=backoff)

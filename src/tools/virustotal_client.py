@@ -3,9 +3,11 @@ VirusTotal v3 API client — IOC enrichment.
 Free tier: 4 req/min, 500 lookups/day.
 Enriches IPs, domains, hashes with malware families and detection ratios.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
@@ -104,7 +106,9 @@ class VirusTotalClient(BaseAPIClient):
         # Priority order: hash > ip > domain
         sorted_iocs = sorted(
             iocs[:max_lookups],
-            key=lambda x: {"sha256": 0, "md5": 1, "sha1": 2, "ipv4": 3, "ipv6": 4, "domain": 5}.get(x[1], 9),
+            key=lambda x: {"sha256": 0, "md5": 1, "sha1": 2, "ipv4": 3, "ipv6": 4, "domain": 5}.get(
+                x[1], 9
+            ),
         )
 
         for value, ioc_type in sorted_iocs:
@@ -126,7 +130,7 @@ class VirusTotalClient(BaseAPIClient):
         return results
 
     @staticmethod
-    def _parse_report(value: str, ioc_type: str, data: dict) -> VTReport:
+    def _parse_report(value: str, ioc_type: str, data: dict[str, Any]) -> VTReport:
         attrs = data.get("data", {}).get("attributes", {})
 
         last_analysis = attrs.get("last_analysis_stats", {})
@@ -147,11 +151,7 @@ class VirusTotalClient(BaseAPIClient):
 
         tags = attrs.get("tags", [])
         last_date_ts = attrs.get("last_analysis_date")
-        last_date = (
-            datetime.fromtimestamp(last_date_ts, tz=timezone.utc)
-            if last_date_ts
-            else None
-        )
+        last_date = datetime.fromtimestamp(last_date_ts, tz=UTC) if last_date_ts else None
 
         return VTReport(
             ioc_value=value,

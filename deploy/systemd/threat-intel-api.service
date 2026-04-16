@@ -1,0 +1,63 @@
+# Long-running FastAPI dashboard.
+#
+# Install:
+#   sudo cp deploy/systemd/threat-intel-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now threat-intel-api.service
+#
+# Expects:
+#   * project checkout at /opt/threat-intel-aggregator
+#   * venv at /opt/threat-intel-aggregator/.venv (contains uvicorn + deps)
+#   * env file at /etc/threat-intel-aggregator/env (mode 0600, root-owned)
+#
+# The env file carries TIA_API_KEY, ANTHROPIC_API_KEY, etc. — keep 0600 and
+# out of VCS. See .env.example for the full list.
+
+[Unit]
+Description=Threat Intel Aggregator — FastAPI dashboard
+Documentation=https://github.com/YOU/threat-intel-aggregator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=tia
+Group=tia
+WorkingDirectory=/opt/threat-intel-aggregator
+
+EnvironmentFile=/etc/threat-intel-aggregator/env
+
+ExecStart=/opt/threat-intel-aggregator/.venv/bin/uvicorn \
+    src.api.app:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --proxy-headers \
+    --forwarded-allow-ips=*
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+
+# ── Hardening ──────────────────────────────────────────────────────────────
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# Only these paths are writable — reports, logs, the SQLite DB.
+ReadWritePaths=/opt/threat-intel-aggregator/output /opt/threat-intel-aggregator/logs
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

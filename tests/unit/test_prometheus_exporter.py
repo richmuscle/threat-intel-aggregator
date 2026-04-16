@@ -1,4 +1,5 @@
 """Prometheus pushgateway exporter — payload shape and graceful skip."""
+
 from __future__ import annotations
 
 import builtins
@@ -17,6 +18,7 @@ from src.models import (
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def populated_state() -> SwarmState:
@@ -86,6 +88,7 @@ def _free_port() -> int:
 
 # ── Payload shape via captured handler ────────────────────────────────────────
 
+
 class _Captured:
     """Captures the most recent push payload so the test can introspect it."""
 
@@ -150,9 +153,7 @@ class TestPushPayload:
             )
             return None
 
-        monkeypatch.setattr(
-            "prometheus_client.push_to_gateway", patched_push, raising=True
-        )
+        monkeypatch.setattr("prometheus_client.push_to_gateway", patched_push, raising=True)
 
         ok = mod.push_metrics(populated_state, run_duration_seconds=12.5)
         assert ok is True
@@ -197,9 +198,7 @@ class TestPushPayload:
             )
             return None
 
-        monkeypatch.setattr(
-            "prometheus_client.push_to_gateway", patched_push, raising=True
-        )
+        monkeypatch.setattr("prometheus_client.push_to_gateway", patched_push, raising=True)
 
         mod.push_metrics(populated_state, run_duration_seconds=1.0)
         body = captured.body
@@ -222,6 +221,7 @@ class TestPushPayload:
 
 
 # ── Graceful-skip paths ───────────────────────────────────────────────────────
+
 
 class TestGracefulSkip:
     def test_skip_on_connection_refused(
@@ -265,10 +265,9 @@ class TestGracefulSkip:
 
 # ── Side-channel probes (nft + /etc/hosts) ────────────────────────────────────
 
+
 class TestSideChannelProbes:
-    def test_blocked_ips_count_zero_when_nft_missing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_blocked_ips_count_zero_when_nft_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from src.integrations import prometheus_exporter as mod
 
         monkeypatch.setattr("src.integrations.prometheus_exporter.shutil.which", lambda _: None)
@@ -316,6 +315,7 @@ class TestIOCClassifier:
 
 # ── Datetime sanity ───────────────────────────────────────────────────────────
 
+
 class TestRunMeta:
     def test_runs_with_no_report(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from src.integrations import prometheus_exporter as mod
@@ -343,9 +343,7 @@ class TestRunMeta:
             )
             return None
 
-        monkeypatch.setattr(
-            "prometheus_client.push_to_gateway", patched_push, raising=True
-        )
+        monkeypatch.setattr("prometheus_client.push_to_gateway", patched_push, raising=True)
 
         empty_state = SwarmState(
             run_id="empty-run",

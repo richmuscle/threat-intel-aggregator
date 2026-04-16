@@ -1,5 +1,6 @@
 """dns_block.sh idempotency — running twice leaves /etc/hosts with one entry
 per domain, never duplicates."""
+
 from __future__ import annotations
 
 import os
@@ -50,8 +51,7 @@ def fake_hosts(tmp_path: Path) -> Path:
     hosts = tmp_path / "hosts"
     # Seed with a typical Fedora default so real localhost entries survive.
     hosts.write_text(
-        "127.0.0.1   localhost localhost.localdomain\n"
-        "::1         localhost localhost.localdomain\n"
+        "127.0.0.1   localhost localhost.localdomain\n::1         localhost localhost.localdomain\n"
     )
     return hosts
 
@@ -67,9 +67,12 @@ class TestIdempotency:
         assert result.returncode == 0, result.stderr
         text = fake_hosts.read_text()
         for domain in SEED_DOMAINS:
-            assert f"\t{domain}\t" in text or f" {domain} " in text or f"\t{domain}\n" in text or f"\t{domain} " in text, (
-                f"seed domain {domain} missing from hosts file:\n{text}"
-            )
+            assert (
+                f"\t{domain}\t" in text
+                or f" {domain} " in text
+                or f"\t{domain}\n" in text
+                or f"\t{domain} " in text
+            ), f"seed domain {domain} missing from hosts file:\n{text}"
         assert "Added:          8" in result.stdout
 
     def test_second_run_adds_nothing(self, fake_hosts: Path, fake_log: Path) -> None:
@@ -85,9 +88,7 @@ class TestIdempotency:
         # All seeds are skipped as already-present.
         assert "Already-present: 8" in second.stdout
 
-    def test_no_duplicate_entries_for_any_domain(
-        self, fake_hosts: Path, fake_log: Path
-    ) -> None:
+    def test_no_duplicate_entries_for_any_domain(self, fake_hosts: Path, fake_log: Path) -> None:
         _run(fake_hosts, fake_log)
         _run(fake_hosts, fake_log)
         _run(fake_hosts, fake_log)
@@ -101,13 +102,9 @@ class TestIdempotency:
                 and not line.lstrip().startswith("#")
                 and line.split()[1:2] == [domain]
             )
-            assert count == 1, (
-                f"domain {domain} appears {count}x, expected 1x\n{text}"
-            )
+            assert count == 1, f"domain {domain} appears {count}x, expected 1x\n{text}"
 
-    def test_preserves_existing_hosts_entries(
-        self, fake_hosts: Path, fake_log: Path
-    ) -> None:
+    def test_preserves_existing_hosts_entries(self, fake_hosts: Path, fake_log: Path) -> None:
         result = _run(fake_hosts, fake_log)
         assert result.returncode == 0
         text = fake_hosts.read_text()

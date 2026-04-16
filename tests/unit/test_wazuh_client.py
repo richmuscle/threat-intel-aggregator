@@ -1,4 +1,5 @@
 """Wazuh forwarder — graceful skip and message framing."""
+
 from __future__ import annotations
 
 import json
@@ -80,7 +81,7 @@ class TestSendWithFakeListener:
             try:
                 pkt, _ = recv.recvfrom(65535)
                 received.append(pkt)
-            except socket.timeout:
+            except TimeoutError:
                 break
         recv.close()
         assert len(received) == 2

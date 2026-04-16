@@ -1,8 +1,9 @@
 """NVD 2.0 API client — fetches recent CVEs with CVSS v3 scoring."""
+
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -15,7 +16,7 @@ logger = structlog.get_logger(__name__)
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class NVDClient(BaseAPIClient):
@@ -70,14 +71,14 @@ class NVDClient(BaseAPIClient):
         should not fail a swarm run. All other HTTP errors propagate so
         the agent wrapper can flag them as failures.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         start = now - timedelta(days=days_back)
 
         params: dict[str, Any] = {
             "resultsPerPage": min(max_results, 2000),
             "startIndex": 0,
             "pubStartDate": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "pubEndDate":   now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pubEndDate": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         if keywords:
             params["keywordSearch"] = " ".join(keywords)
@@ -145,9 +146,7 @@ class NVDClient(BaseAPIClient):
         cve = item.get("cve", {})
         cve_id = cve.get("id", "CVE-0000-0000")
         descriptions = cve.get("descriptions", [])
-        description = next(
-            (d["value"] for d in descriptions if d.get("lang") == "en"), ""
-        )
+        description = next((d["value"] for d in descriptions if d.get("lang") == "en"), "")
 
         metrics = cve.get("metrics", {})
         cvss_score: float | None = None

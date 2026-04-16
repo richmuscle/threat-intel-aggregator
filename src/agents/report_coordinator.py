@@ -1,13 +1,14 @@
 """Report Coordinator — renders final markdown report and SIEM-ready JSON."""
+
 from __future__ import annotations
 
 import json
-import time
-from datetime import datetime, timezone
-from pathlib import Path
-
 import re
+import time
 from collections import Counter
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -41,7 +42,7 @@ VENDOR_ADVISORY_DOMAINS = (
 )
 
 
-async def report_coordinator(state: SwarmState, config: dict) -> dict:
+async def report_coordinator(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
     """
     LangGraph node: renders the correlated report to markdown + JSON artifacts.
     Also produces Elastic-compatible SIEM alert payloads.
@@ -51,11 +52,11 @@ async def report_coordinator(state: SwarmState, config: dict) -> dict:
 
     if not state.report:
         logger.error("no_report_to_render", agent=agent_name)
-        return {"errors": state.errors + ["report_coordinator: no report in state"]}
+        return {"errors": [*state.errors, "report_coordinator: no report in state"]}
 
     report = state.report
     OUTPUT_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
     # ── Markdown report ──────────────────────────────────────────────────────
     md = _render_markdown(report, state)
@@ -244,13 +245,12 @@ def _render_markdown(report: CorrelatedIntelReport, state: SwarmState) -> str:
         f"- **Triggered at:** {state.triggered_at.strftime('%Y-%m-%d %H:%M UTC')}",
         f"- **Raw records ingested:** {state.total_raw_records}",
         f"- **Dedup removed:** {state.dedup_removed}",
-        f"- **Agent results:**",
+        "- **Agent results:**",
     ]
     for r in state.agent_results:
         status = "✓" if r.success else "✗"
         lines.append(
-            f"  - {status} `{r.agent_name}`: {r.items_fetched} records "
-            f"in {round(r.duration_ms)}ms"
+            f"  - {status} `{r.agent_name}`: {r.items_fetched} records in {round(r.duration_ms)}ms"
         )
         if r.error:
             lines.append(f"    - Error: {r.error}")
@@ -289,44 +289,57 @@ def _ioc_type_breakdown(state: SwarmState) -> Counter[str]:
 # the lossy normalizer to preserve the raw record.
 _SEVERITY_CONFIDENCE = {
     "CRITICAL": 1.0,
-    "HIGH":     0.85,
-    "MEDIUM":   0.6,
-    "LOW":      0.3,
-    "INFO":     0.1,
-    "UNKNOWN":  0.0,
+    "HIGH": 0.85,
+    "MEDIUM": 0.6,
+    "LOW": 0.3,
+    "INFO": 0.1,
+    "UNKNOWN": 0.0,
 }
 
 
-def _sidecar_from_state(state: SwarmState) -> list[dict]:
+def _sidecar_from_state(state: SwarmState) -> list[dict[str, Any]]:
     """
     Synthesize IOC sidecar records from normalized threats.
 
-    Uses `effective_severity` (post-enrichment) on purpose: if EPSS flags a
-    CVE as actively exploited or VT confirms high detection ratio on an IP,
-    we *want* that upgrade to flow through to the firewall/DNS blocklist.
-    Provider-original severity lives on `t.severity` and is available for
-    auditing, but the defensive gate runs off the enrichment-informed view.
+    Confidence strategy:
+      * Prefer `t.original_confidence` (set by `normalize_ioc` from the
+        provider-original `IOCRecord.confidence`) — this is the raw value
+        the firewall gate in `scripts/extract_iocs.py` should consume.
+      * Fall back to the severity → confidence map when the field is
+        absent (legacy records normalized before this snapshot existed).
+
+    `malicious` uses `effective_severity` (post-enrichment) on purpose:
+    if EPSS/VT flags a threat as actively exploited, we *want* that upgrade
+    to flow into the firewall gate. `confidence` stays raw so operators
+    can tune `extract_iocs.py`'s gate independently of enrichment.
     """
-    records: list[dict] = []
+    records: list[dict[str, Any]] = []
     for t in state.normalized_threats:
         if t.threat_type != "ioc" or not t.ioc_values:
             continue
         eff_tags = t.effective_tags
         # Prefer the typed field; fall back to tag-scan for legacy records.
-        ioc_type = t.ioc_type or next(
+        ioc_type: str = t.ioc_type or next(
             (tag for tag in eff_tags if tag in _IOC_TYPE_SET), "ipv4"
         )
         eff_sev = t.effective_severity
-        confidence = _SEVERITY_CONFIDENCE.get(eff_sev.value, 0.5)
+        # Raw provider confidence if snapshotted; otherwise synthesise from
+        # severity so legacy / pre-P1-A paths still gate meaningfully.
+        if t.original_confidence is not None:
+            confidence = t.original_confidence
+        else:
+            confidence = _SEVERITY_CONFIDENCE.get(eff_sev.value, 0.5)
         for value in t.ioc_values:
-            records.append({
-                "ioc_type": ioc_type,
-                "value": value,
-                "confidence": confidence,
-                "malicious": eff_sev.value in ("CRITICAL", "HIGH"),
-                "tags": [tag for tag in eff_tags if tag not in _IOC_TYPE_SET],
-                "sources": [s.value if hasattr(s, "value") else s for s in t.sources],
-            })
+            records.append(
+                {
+                    "ioc_type": ioc_type,
+                    "value": value,
+                    "confidence": confidence,
+                    "malicious": eff_sev.value in ("CRITICAL", "HIGH"),
+                    "tags": [tag for tag in eff_tags if tag not in _IOC_TYPE_SET],
+                    "sources": [s.value if hasattr(s, "value") else s for s in t.sources],
+                }
+            )
     return records
 
 
@@ -356,9 +369,7 @@ def _pick_advisory(references: list[str]) -> str | None:
     return references[0] if references else None
 
 
-_BLOCK_LINE_RE = re.compile(
-    r"^(?P<ts>\S+)\s+(?P<kind>added|dns_block)\s+(?P<target>\S+)"
-)
+_BLOCK_LINE_RE = re.compile(r"^(?P<ts>\S+)\s+(?P<kind>added|dns_block)\s+(?P<target>\S+)")
 
 
 def _tail_blocks_log(n: int = 40) -> list[tuple[str, str, str]]:
@@ -382,7 +393,7 @@ def _tail_blocks_log(n: int = 40) -> list[tuple[str, str, str]]:
     return parsed
 
 
-def _to_ecs(alert: dict, report: CorrelatedIntelReport) -> dict:
+def _to_ecs(alert: dict[str, Any], report: CorrelatedIntelReport) -> dict[str, Any]:
     """Convert alert dict to Elastic Common Schema event."""
     return {
         "@timestamp": report.generated_at.isoformat(),
@@ -406,7 +417,7 @@ def _to_ecs(alert: dict, report: CorrelatedIntelReport) -> dict:
         "vulnerability": {
             "id": alert.get("cve_ref", ""),
         },
-        "tags": alert.get("tags", []) + ["threat-intel-aggregator"],
+        "tags": [*alert.get("tags", []), "threat-intel-aggregator"],
         "labels": {
             "report_id": report.report_id,
         },

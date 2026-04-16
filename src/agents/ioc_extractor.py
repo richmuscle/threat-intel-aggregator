@@ -1,8 +1,10 @@
 """IOC Extractor Agent — runs OTX + AbuseIPDB concurrently via asyncio.gather."""
+
 from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any
 
 import structlog
 
@@ -13,7 +15,7 @@ from src.tools import AbuseIPDBClient, OTXClient
 logger = structlog.get_logger(__name__)
 
 
-async def ioc_extractor_agent(state: SwarmState, config: dict) -> dict:
+async def ioc_extractor_agent(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
     """
     LangGraph node: fires OTX and AbuseIPDB in true parallel via asyncio.gather.
     Merges, deduplicates by value, returns normalized IOC records.
@@ -37,12 +39,15 @@ async def ioc_extractor_agent(state: SwarmState, config: dict) -> dict:
 
         all_iocs: list[IOCRecord] = []
 
-        if isinstance(otx_iocs, Exception):
+        # `asyncio.gather(..., return_exceptions=True)` yields `T | BaseException`
+        # per task; narrow on `BaseException` so mypy eliminates the exception
+        # branch in the else-clause below.
+        if isinstance(otx_iocs, BaseException):
             logger.warning("otx_failed", error=str(otx_iocs))
         else:
             all_iocs.extend(otx_iocs)
 
-        if isinstance(abuse_iocs, Exception):
+        if isinstance(abuse_iocs, BaseException):
             logger.warning("abuseipdb_failed", error=str(abuse_iocs))
         else:
             all_iocs.extend(abuse_iocs)
@@ -54,9 +59,7 @@ async def ioc_extractor_agent(state: SwarmState, config: dict) -> dict:
                 seen[ioc.value] = ioc
             else:
                 # Merge sources
-                seen[ioc.value].sources = list(
-                    set(seen[ioc.value].sources + ioc.sources)
-                )
+                seen[ioc.value].sources = list(set(seen[ioc.value].sources + ioc.sources))
 
         deduped = list(seen.values())
         normalized = [normalize_ioc(i) for i in deduped]
@@ -82,7 +85,7 @@ async def ioc_extractor_agent(state: SwarmState, config: dict) -> dict:
         # values instead of synthesising them from NormalizedThreat severity.
         # `_parallel_ingest_node` pulls `raw_iocs` into SwarmState.
         return {
-            "agent_results": state.agent_results + [result],
+            "agent_results": [*state.agent_results, result],
             "raw_iocs": deduped,
         }
 
@@ -95,7 +98,7 @@ async def ioc_extractor_agent(state: SwarmState, config: dict) -> dict:
             error=str(exc),
             duration_ms=duration_ms,
         )
-        return {"agent_results": state.agent_results + [result], "raw_iocs": []}
+        return {"agent_results": [*state.agent_results, result], "raw_iocs": []}
 
 
 async def _fetch_otx(api_key: str | None, limit: int) -> list[IOCRecord]:

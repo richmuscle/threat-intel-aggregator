@@ -1,0 +1,53 @@
+# Pre-commit hooks — `pre-commit install` wires these to .git/hooks.
+# Ruff is blocking (auto-fixes applied in place, commit must re-stage).
+# Mypy is advisory — matches the CI workflow so local and CI behave the same.
+#
+# Install:  pip install pre-commit && pre-commit install
+# Run all:  pre-commit run --all-files
+# Bypass:   git commit --no-verify   (don't — fix the issue instead)
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        name: ruff — lint (auto-fix)
+        args: [--fix]
+      - id: ruff-format
+        name: ruff — format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: detect-private-key
+      # Prevent accidental commit of ANTHROPIC_API_KEY etc. — a defence-
+      # in-depth over the SecretStr wrapping already in the runtime.
+      - id: forbid-new-submodules
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        name: mypy — strict type check (advisory, never blocks commit)
+        # `verbose` surfaces type errors in the hook log without failing the
+        # commit. Promote to blocking by removing `verbose` and setting
+        # `stages: [pre-commit]` back to the default.
+        verbose: true
+        additional_dependencies:
+          - pydantic>=2.7.0
+          - types-PyYAML
+        # Only src/ — tests intentionally use loose annotations for fixtures.
+        files: ^src/
+        # Prevent mypy from failing the commit — matches CI behaviour.
+        pass_filenames: false
+        args: [src/]
+        # `entry` and `language` defaults are inherited; the wrapper below
+        # turns a non-zero exit into a warning rather than a failure.
+        stages: [manual]

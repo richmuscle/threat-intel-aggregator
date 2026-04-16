@@ -1,8 +1,10 @@
 """Feed Aggregator Agent — CISA KEV + GreyNoise, runs both concurrently."""
+
 from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any
 
 import structlog
 
@@ -13,7 +15,7 @@ from src.tools import CISAKEVClient, GreyNoiseClient
 logger = structlog.get_logger(__name__)
 
 
-async def feed_aggregator_agent(state: SwarmState, config: dict) -> dict:
+async def feed_aggregator_agent(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
     """
     LangGraph node: CISA KEV and GreyNoise in parallel via asyncio.gather.
     CISA KEV needs no API key — always fires. GreyNoise degrades gracefully.
@@ -30,7 +32,11 @@ async def feed_aggregator_agent(state: SwarmState, config: dict) -> dict:
     # ransomware-tagged KEVs total but only ~1 in any given 30-item window.
     kev_limit = 300 if state.query_keywords else 30
 
+    # `return_exceptions=True` widens each result to `T | BaseException`;
+    # annotations help mypy narrow on the isinstance checks below.
     try:
+        kev_items: list[ThreatFeedItem] | BaseException
+        gn_items: list[ThreatFeedItem] | BaseException
         kev_items, gn_items = await asyncio.gather(
             _fetch_cisa_kev(limit=kev_limit),
             _fetch_greynoise(greynoise_key),
@@ -39,7 +45,7 @@ async def feed_aggregator_agent(state: SwarmState, config: dict) -> dict:
 
         all_items: list[ThreatFeedItem] = []
 
-        if isinstance(kev_items, Exception):
+        if isinstance(kev_items, BaseException):
             logger.warning("cisa_kev_failed", error=str(kev_items))
         else:
             # Keyword filter now matches on tags as well as title/description.
@@ -51,7 +57,8 @@ async def feed_aggregator_agent(state: SwarmState, config: dict) -> dict:
             if state.query_keywords:
                 keywords_lower = [k.lower() for k in state.query_keywords]
                 kev_items = [
-                    item for item in kev_items
+                    item
+                    for item in kev_items
                     if any(
                         kw in item.title.lower()
                         or kw in item.description.lower()
@@ -61,7 +68,7 @@ async def feed_aggregator_agent(state: SwarmState, config: dict) -> dict:
                 ]
             all_items.extend(kev_items[:30])
 
-        if isinstance(gn_items, Exception):
+        if isinstance(gn_items, BaseException):
             logger.warning("greynoise_failed", error=str(gn_items))
         else:
             all_items.extend(gn_items[:20])
@@ -94,7 +101,7 @@ async def feed_aggregator_agent(state: SwarmState, config: dict) -> dict:
             duration_ms=duration_ms,
         )
 
-    return {"agent_results": state.agent_results + [result]}
+    return {"agent_results": [*state.agent_results, result]}
 
 
 async def _fetch_cisa_kev(limit: int = 30) -> list[ThreatFeedItem]:

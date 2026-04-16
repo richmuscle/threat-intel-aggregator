@@ -1,4 +1,5 @@
 """MITRE ATT&CK TAXII / STIX client — fetches techniques and tactics."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,7 +11,9 @@ from src.tools.base_client import BaseAPIClient
 
 logger = structlog.get_logger(__name__)
 
-ATTACK_STIX_URL = "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json"
+ATTACK_STIX_URL = (
+    "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json"
+)
 
 
 class MITREATTACKClient(BaseAPIClient):
@@ -31,13 +34,11 @@ class MITREATTACKClient(BaseAPIClient):
         techniques = list(self._cache.values())
 
         if tactic_filter:
-            techniques = [
-                t for t in techniques
-                if tactic_filter.lower() in t.tactic.lower()
-            ]
+            techniques = [t for t in techniques if tactic_filter.lower() in t.tactic.lower()]
         if platform_filter:
             techniques = [
-                t for t in techniques
+                t
+                for t in techniques
                 if any(platform_filter.lower() in p.lower() for p in t.platforms)
             ]
 
@@ -52,16 +53,11 @@ class MITREATTACKClient(BaseAPIClient):
         """Best-effort mapping: search technique descriptions for CVE reference."""
         if not self._cache:
             await self._load_stix()
-        return [
-            t for t in self._cache.values()
-            if cve_id in t.description
-        ]
+        return [t for t in self._cache.values() if cve_id in t.description]
 
     async def _load_stix(self) -> None:
         logger.info("loading_attack_stix", url=ATTACK_STIX_URL)
-        data = await self.get(
-            "/mitre/cti/master/enterprise-attack/enterprise-attack.json"
-        )
+        data = await self.get("/mitre/cti/master/enterprise-attack/enterprise-attack.json")
         objects: list[dict[str, Any]] = data.get("objects", [])
 
         # Build tactic lookup
@@ -102,8 +98,7 @@ class MITREATTACKClient(BaseAPIClient):
             )
 
             mitigations = [
-                r.get("description", "")
-                for r in obj.get("x_mitre_defenses_bypassed", [])
+                r.get("description", "") for r in obj.get("x_mitre_defenses_bypassed", [])
             ]
             data_sources = obj.get("x_mitre_data_sources", [])
 

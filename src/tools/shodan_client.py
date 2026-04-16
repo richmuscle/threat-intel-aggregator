@@ -3,14 +3,13 @@ Shodan client — internet exposure intelligence.
 Free tier: 1 credit/day, 100 results/query (enough for spot-checking critical IPs).
 Membership $49/mo: unlimited queries, full banner data, SSL certs, open ports.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
-from src.models.threat import IOCRecord, Severity, ThreatSource
 from src.tools.base_client import BaseAPIClient, is_valid_ip
 
 logger = structlog.get_logger(__name__)
@@ -36,7 +35,7 @@ class ShodanClient(BaseAPIClient):
             return None
         try:
             data = await self.get(f"/shodan/host/{ip}", params={"key": self._api_key})
-            return data
+            return cast("dict[str, Any]", data)
         except Exception as exc:
             logger.debug("shodan_host_failed", ip=ip, error=str(exc))
             return None
@@ -57,7 +56,7 @@ class ShodanClient(BaseAPIClient):
                     "limit": min(limit, 100),
                 },
             )
-            return data.get("matches", [])
+            return cast("list[dict[str, Any]]", data.get("matches", []))
         except Exception as exc:
             logger.error("shodan_search_failed", query=query, error=str(exc))
             return []
@@ -120,7 +119,8 @@ class ShodanClient(BaseAPIClient):
         if not self._api_key:
             return {}
         try:
-            return await self.get("/api-info", params={"key": self._api_key})
+            data = await self.get("/api-info", params={"key": self._api_key})
+            return cast("dict[str, Any]", data)
         except Exception as exc:
             logger.warning("shodan_api_info_failed", error=str(exc))
             return {}

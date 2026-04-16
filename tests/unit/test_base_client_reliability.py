@@ -13,6 +13,7 @@ These are the two primitives the whole swarm leans on for availability, so
 failure modes here cascade across every agent. Keeping them tested means a
 refactor of the rate-limiter math can't silently change request cadence.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,8 +30,8 @@ from src.tools.base_client import (
     unwrap_secret,
 )
 
-
 # ── RateLimiter ───────────────────────────────────────────────────────────────
+
 
 class TestRateLimiter:
     """Token-bucket rate limiter tests.
@@ -89,6 +90,7 @@ class TestRateLimiter:
 
 
 # ── retry_on_disconnect ───────────────────────────────────────────────────────
+
 
 class TestRetryOnDisconnect:
     """`@retry_on_disconnect` behaviour around `ServerDisconnectedError`.
@@ -155,6 +157,7 @@ class TestRetryOnDisconnect:
 
 
 # ── unwrap_secret ─────────────────────────────────────────────────────────────
+
 
 class TestUnwrapSecret:
     """SecretStr unwrap helper — used at aiohttp + anthropic SDK boundaries."""

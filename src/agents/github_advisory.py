@@ -3,7 +3,10 @@ GitHub Advisory Agent — supply chain CVE context.
 No API key required (token raises rate limits). Pairs with NVD CVEs to add
 package-level actionability via the `enriched_*` overlay pattern.
 """
+
 from __future__ import annotations
+
+from typing import Any
 
 import structlog
 
@@ -17,14 +20,10 @@ logger = structlog.get_logger(__name__)
 
 
 @enrichment_agent("github_advisory")
-async def github_advisory_agent(state: SwarmState, config: dict) -> EnrichmentResult:
+async def github_advisory_agent(state: SwarmState, config: dict[str, Any]) -> EnrichmentResult:
     gh_token = unwrap_secret(config.get("configurable", {}).get("github_token"))  # optional
 
-    cve_ids = list({
-        cve_id
-        for threat in state.normalized_threats
-        for cve_id in threat.cve_ids
-    })
+    cve_ids = list({cve_id for threat in state.normalized_threats for cve_id in threat.cve_ids})
     if not cve_ids:
         return None
 

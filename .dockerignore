@@ -1,0 +1,40 @@
+# Keep the build context small — speeds up `docker build` on a slow link
+# and avoids leaking dev files into the image.
+
+# VCS + editor state
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Test fixtures / local runtime state
+output/
+logs/
+.env
+tests/
+
+# Docs we don't need at runtime
+AUDIT_REPORT.md
+PATCHES.md
+docs/
+
+# Local SOC-stack certs (host-specific paths)
+*.crt
+*.key

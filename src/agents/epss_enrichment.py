@@ -3,7 +3,10 @@ EPSS Enrichment Agent — enriches CVEs with exploit probability scores.
 Runs in parallel with other ingestion agents.
 EPSS >= 0.5 = high probability of active exploitation in the wild.
 """
+
 from __future__ import annotations
+
+from typing import Any
 
 import structlog
 
@@ -16,7 +19,7 @@ logger = structlog.get_logger(__name__)
 
 
 @enrichment_agent("epss_enrichment")
-async def epss_enrichment_agent(state: SwarmState, config: dict) -> EnrichmentResult:
+async def epss_enrichment_agent(state: SwarmState, config: dict[str, Any]) -> EnrichmentResult:
     """
     Fetches EPSS scores for all CVEs in current state.
     Upgrades severity of high-EPSS CVEs to CRITICAL via the `enriched_severity`
@@ -37,11 +40,17 @@ async def epss_enrichment_agent(state: SwarmState, config: dict) -> EnrichmentRe
     enriched_count = 0
     upgraded_count = 0
     for threat in state.normalized_threats:
+        # Idempotency guard (P1-B): skip threats we've already overlayed.
+        # Makes a future remediation-loop re-entry double-bump-safe.
+        if "epss" in threat.enrichments_applied:
+            continue
+        touched = False
         for cve_id in threat.cve_ids:
             score = scores.get(cve_id)
             if not score:
                 continue
             enriched_count += 1
+            touched = True
             epss_tag = f"epss:{score.epss:.3f}"
             if epss_tag not in threat.enriched_tags:
                 threat.enriched_tags.append(epss_tag)
@@ -49,26 +58,30 @@ async def epss_enrichment_agent(state: SwarmState, config: dict) -> EnrichmentRe
                 threat.enriched_severity = Severity.CRITICAL
                 threat.enriched_tags.append("epss-actively-exploited")
                 upgraded_count += 1
+        if touched:
+            threat.enrichments_applied.append("epss")
 
     new_threats: list[NormalizedThreat] = []
     for score in top_exploited:
         if score.cve_id in cve_ids:
             continue
-        new_threats.append(NormalizedThreat(
-            threat_type="cve",
-            title=f"{score.cve_id} (EPSS: {score.epss:.1%})",
-            description=(
-                f"Actively exploited CVE with EPSS score {score.epss:.3f} "
-                f"(top {(1 - score.percentile) * 100:.0f}% of all CVEs by exploit probability)."
-            ),
-            severity=Severity.CRITICAL,
-            cve_ids=[score.cve_id],
-            tags=[
-                "epss-actively-exploited",
-                f"epss:{score.epss:.3f}",
-                f"epss-percentile:{score.percentile:.2f}",
-            ],
-        ))
+        new_threats.append(
+            NormalizedThreat(
+                threat_type="cve",
+                title=f"{score.cve_id} (EPSS: {score.epss:.1%})",
+                description=(
+                    f"Actively exploited CVE with EPSS score {score.epss:.3f} "
+                    f"(top {(1 - score.percentile) * 100:.0f}% of all CVEs by exploit probability)."
+                ),
+                severity=Severity.CRITICAL,
+                cve_ids=[score.cve_id],
+                tags=[
+                    "epss-actively-exploited",
+                    f"epss:{score.epss:.3f}",
+                    f"epss-percentile:{score.percentile:.2f}",
+                ],
+            )
+        )
 
     return (
         new_threats,

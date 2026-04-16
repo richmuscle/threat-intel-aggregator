@@ -23,6 +23,7 @@ and preserves nested typed fields (`AgentResult`, `NormalizedThreat`,
 `_hydrate()` exists only as a defensive coercion used by `run_swarm` in case
 LangGraph hands back the final state as a dict (driver-version dependent).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,6 +54,7 @@ logger = structlog.get_logger(__name__)
 
 # ── State coercion (defensive) ────────────────────────────────────────────────
 
+
 def _hydrate(raw: Any) -> SwarmState:
     """Coerce `raw` to a typed `SwarmState`.
 
@@ -74,7 +76,7 @@ def _hydrate(raw: Any) -> SwarmState:
             data[key] = [model(**r) if isinstance(r, dict) else r for r in data[key]]
 
     _rehydrate_list("normalized_threats", NormalizedThreat)
-    _rehydrate_list("raw_iocs",           IOCRecord)
+    _rehydrate_list("raw_iocs", IOCRecord)
     if data.get("agent_results"):
         rebuilt: list[AgentResult] = []
         for r in data["agent_results"]:
@@ -82,22 +84,24 @@ def _hydrate(raw: Any) -> SwarmState:
                 rebuilt.append(r)
                 continue
             rec_dicts = r.get("records") or []
-            r = {**r, "records": [
-                NormalizedThreat(**x) if isinstance(x, dict) else x for x in rec_dicts
-            ]}
+            r = {
+                **r,
+                "records": [NormalizedThreat(**x) if isinstance(x, dict) else x for x in rec_dicts],
+            }
             rebuilt.append(AgentResult(**r))
         data["agent_results"] = rebuilt
 
     return SwarmState(**data)
 
 
-def _cfg(config: RunnableConfig | None) -> dict:
+def _cfg(config: RunnableConfig | None) -> dict[str, Any]:
     return {"configurable": dict((config or {}).get("configurable", {}))}
 
 
 # ── Graph nodes ───────────────────────────────────────────────────────────────
 
-async def _supervisor_node(state: SwarmState, config: RunnableConfig) -> dict:
+
+async def _supervisor_node(state: SwarmState, config: RunnableConfig) -> dict[str, Any]:
     """Pre-ingest: dynamic swarm routing based on keyword analysis."""
     result = await supervisor_agent(state, _cfg(config))
     swarm_cfg = result.get("swarm_config", {})
@@ -113,14 +117,14 @@ async def _supervisor_node(state: SwarmState, config: RunnableConfig) -> dict:
 # the fan-out node encoding each agent's import. New ingest agents get added
 # here in one line; `_parallel_ingest_node` never needs re-editing.
 _INGEST_AGENTS: dict[str, Any] = {
-    "cve_scraper":     cve_scraper_agent,
-    "attack_mapper":   attack_mapper_agent,
-    "ioc_extractor":   ioc_extractor_agent,
+    "cve_scraper": cve_scraper_agent,
+    "attack_mapper": attack_mapper_agent,
+    "ioc_extractor": ioc_extractor_agent,
     "feed_aggregator": feed_aggregator_agent,
 }
 
 
-async def _parallel_ingest_node(state: SwarmState, config: RunnableConfig) -> dict:
+async def _parallel_ingest_node(state: SwarmState, config: RunnableConfig) -> dict[str, Any]:
     """Fan-out: fires the ingestion agents selected by `swarm_config.activate_agents`.
 
     Honors the supervisor's routing decision — if the supervisor chose only
@@ -132,8 +136,7 @@ async def _parallel_ingest_node(state: SwarmState, config: RunnableConfig) -> di
     cfg = _cfg(config)
     activate = set(state.swarm_config.get("activate_agents") or [])
     selected: dict[str, Any] = {
-        name: fn for name, fn in _INGEST_AGENTS.items()
-        if not activate or name in activate
+        name: fn for name, fn in _INGEST_AGENTS.items() if not activate or name in activate
     }
     logger.info("parallel_ingest_start", run_id=state.run_id, agents=list(selected))
 
@@ -160,7 +163,7 @@ async def _parallel_ingest_node(state: SwarmState, config: RunnableConfig) -> di
     return {"agent_results": merged_results, "raw_iocs": raw_iocs}
 
 
-async def _normalization_node(state: SwarmState, config: RunnableConfig) -> dict:
+async def _normalization_node(state: SwarmState, config: RunnableConfig) -> dict[str, Any]:
     """Dedup agent records by content hash. Delegates to NormalizationPipeline."""
     all_records: list[NormalizedThreat] = []
     for result in state.agent_results:
@@ -179,13 +182,13 @@ async def _normalization_node(state: SwarmState, config: RunnableConfig) -> dict
 # Enrichment agents follow the supervisor's activation list too — lets the
 # operator disable e.g. EPSS when the CVE set is tiny to save API budget.
 _ENRICHMENT_AGENTS_TIER1: dict[str, Any] = {
-    "epss":            epss_enrichment_agent,
-    "virustotal":      virustotal_enrichment_agent,
+    "epss": epss_enrichment_agent,
+    "virustotal": virustotal_enrichment_agent,
     "github_advisory": github_advisory_agent,
 }
 
 
-async def _enrichment_node(state: SwarmState, config: RunnableConfig) -> dict:
+async def _enrichment_node(state: SwarmState, config: RunnableConfig) -> dict[str, Any]:
     """
     V2 enrichment. Tier 1 (EPSS / VT / GitHub Advisory) runs in parallel
     because their inputs are disjoint (EPSS reads CVEs, VT reads IOCs,
@@ -201,7 +204,8 @@ async def _enrichment_node(state: SwarmState, config: RunnableConfig) -> dict:
     cfg = _cfg(config)
     activate = set(state.swarm_config.get("activate_agents") or [])
     selected_t1: dict[str, Any] = {
-        name: fn for name, fn in _ENRICHMENT_AGENTS_TIER1.items()
+        name: fn
+        for name, fn in _ENRICHMENT_AGENTS_TIER1.items()
         if not activate or name in activate
     }
     logger.info(
@@ -225,10 +229,12 @@ async def _enrichment_node(state: SwarmState, config: RunnableConfig) -> dict:
 
     # Tier 2: Shodan (optional). Skipped when the supervisor disabled it.
     if not activate or "shodan" in activate:
-        shodan_state = state.model_copy(update={
-            "agent_results": new_agent_results,
-            "normalized_threats": state.normalized_threats + added_records,
-        })
+        shodan_state = state.model_copy(
+            update={
+                "agent_results": new_agent_results,
+                "normalized_threats": state.normalized_threats + added_records,
+            }
+        )
         shodan_result = await shodan_enrichment_agent(shodan_state, cfg)
         new_agent_results.extend(shodan_result.get("agent_results", []))
 
@@ -246,14 +252,14 @@ async def _enrichment_node(state: SwarmState, config: RunnableConfig) -> dict:
         total_threats=len(final_normalized),
     )
     return {
-        "agent_results":      new_agent_results,
+        "agent_results": new_agent_results,
         "normalized_threats": final_normalized,
         # `dedup_removed` accumulates — first pass in normalize + second here.
-        "dedup_removed":      state.dedup_removed + post_dedup,
+        "dedup_removed": state.dedup_removed + post_dedup,
     }
 
 
-async def _correlation_node(state: SwarmState, config: RunnableConfig) -> dict:
+async def _correlation_node(state: SwarmState, config: RunnableConfig) -> dict[str, Any]:
     # Agents already return pre-concatenated error lists (`state.errors + [new]`),
     # so the node passes them through as-is — LangGraph's merge semantics
     # replace the field wholesale.
@@ -266,13 +272,13 @@ async def _correlation_node(state: SwarmState, config: RunnableConfig) -> dict:
     return update
 
 
-async def _reflection_node(state: SwarmState, config: RunnableConfig) -> dict:
+async def _reflection_node(state: SwarmState, config: RunnableConfig) -> dict[str, Any]:
     """Post-correlation: confidence scoring and gap analysis. No state mutation."""
     result = await reflection_agent(state, _cfg(config))
     return {"report": result["report"]} if result.get("report") else {}
 
 
-async def _report_node(state: SwarmState, config: RunnableConfig) -> dict:
+async def _report_node(state: SwarmState, config: RunnableConfig) -> dict[str, Any]:
     result = await report_coordinator(state, _cfg(config))
     update: dict[str, Any] = {"completed": True}
     if result.get("report"):
@@ -284,6 +290,7 @@ async def _report_node(state: SwarmState, config: RunnableConfig) -> dict:
 
 # ── Graph construction ────────────────────────────────────────────────────────
 
+
 def build_graph() -> Any:
     """Build and compile the V2 enterprise swarm StateGraph.
 
@@ -292,35 +299,36 @@ def build_graph() -> Any:
     per hop, and nested typed fields (`AgentResult`, `NormalizedThreat`,
     `IOCRecord`) survive edge traversal.
     """
-    graph: StateGraph = StateGraph(SwarmState)
+    graph: StateGraph[SwarmState] = StateGraph(SwarmState)
 
-    graph.add_node("supervisor",       _supervisor_node)
-    graph.add_node("parallel_ingest",  _parallel_ingest_node)
-    graph.add_node("normalize",        _normalization_node)
-    graph.add_node("enrich",           _enrichment_node)
-    graph.add_node("correlate",        _correlation_node)
-    graph.add_node("reflect",          _reflection_node)
-    graph.add_node("report",           _report_node)
+    graph.add_node("supervisor", _supervisor_node)
+    graph.add_node("parallel_ingest", _parallel_ingest_node)
+    graph.add_node("normalize", _normalization_node)
+    graph.add_node("enrich", _enrichment_node)
+    graph.add_node("correlate", _correlation_node)
+    graph.add_node("reflect", _reflection_node)
+    graph.add_node("report", _report_node)
 
     graph.set_entry_point("supervisor")
-    graph.add_edge("supervisor",      "parallel_ingest")
+    graph.add_edge("supervisor", "parallel_ingest")
     graph.add_edge("parallel_ingest", "normalize")
-    graph.add_edge("normalize",       "enrich")
-    graph.add_edge("enrich",          "correlate")
-    graph.add_edge("correlate",       "reflect")
-    graph.add_edge("reflect",         "report")
-    graph.add_edge("report",          END)
+    graph.add_edge("normalize", "enrich")
+    graph.add_edge("enrich", "correlate")
+    graph.add_edge("correlate", "reflect")
+    graph.add_edge("reflect", "report")
+    graph.add_edge("report", END)
 
     return graph.compile()
 
 
 # ── Public entrypoint ─────────────────────────────────────────────────────────
 
+
 async def run_swarm(
     query_keywords: list[str] | None = None,
     max_cves: int = 50,
     max_iocs: int = 100,
-    config: dict | None = None,
+    config: dict[str, Any] | None = None,
 ) -> SwarmState:
     run_id = str(uuid.uuid4())
     structlog.contextvars.bind_contextvars(run_id=run_id)

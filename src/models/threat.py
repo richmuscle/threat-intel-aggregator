@@ -2,16 +2,16 @@
 Core threat intelligence data models.
 All inter-agent data passes through these schemas — no loose dicts anywhere.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, computed_field, model_validator
-
 
 # ── Discriminated-union labels ────────────────────────────────────────────────
 #
@@ -26,10 +26,15 @@ from pydantic import BaseModel, Field, computed_field, model_validator
 # out of `tags` with a set-membership check.
 
 ThreatType = Literal["cve", "technique", "ioc", "feed_item"]
-IOCType    = Literal["ipv4", "ipv6", "domain", "md5", "sha1", "sha256", "url", "email"]
+IOCType = Literal["ipv4", "ipv6", "domain", "md5", "sha1", "sha256", "url", "email"]
 
 
-class Severity(str, Enum):
+# `StrEnum` (Python 3.11+) replaces the older `class X(str, Enum)` mixin:
+# `str(Severity.CRITICAL)` now returns `"CRITICAL"` instead of the
+# `"Severity.CRITICAL"` name-qualified form. `.value` access and equality
+# against raw strings stay unchanged, which is the whole migration API-
+# compatibility story. See `pyproject.toml` — UP042 is now satisfied.
+class Severity(StrEnum):
     CRITICAL = "CRITICAL"
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
@@ -38,7 +43,7 @@ class Severity(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class ThreatSource(str, Enum):
+class ThreatSource(StrEnum):
     NVD = "NVD"
     MITRE_CVE = "MITRE_CVE"
     MITRE_ATTACK = "MITRE_ATTACK"
@@ -52,8 +57,10 @@ class ThreatSource(str, Enum):
 
 # ─── Agent-specific raw models ────────────────────────────────────────────────
 
+
 class CVERecord(BaseModel):
     """Raw CVE data from NVD / MITRE CVE feeds."""
+
     cve_id: str = Field(..., pattern=r"^CVE-\d{4}-\d{4,}$")
     description: str
     published: datetime
@@ -68,7 +75,7 @@ class CVERecord(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
     @model_validator(mode="after")
-    def derive_severity_from_score(self) -> "CVERecord":
+    def derive_severity_from_score(self) -> CVERecord:
         if self.severity != Severity.UNKNOWN:
             return self
         score = self.cvss_v3_score
@@ -87,6 +94,7 @@ class CVERecord(BaseModel):
 
 class ATTACKTechnique(BaseModel):
     """MITRE ATT&CK technique / sub-technique."""
+
     technique_id: str = Field(..., pattern=r"^T\d{4}(\.\d{3})?$")
     name: str
     tactic: str
@@ -101,6 +109,7 @@ class ATTACKTechnique(BaseModel):
 
 class IOCRecord(BaseModel):
     """Indicator of Compromise — IP, domain, file hash, URL."""
+
     ioc_type: str = Field(..., pattern=r"^(ipv4|ipv6|domain|md5|sha1|sha256|url|email)$")
     value: str
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -117,6 +126,7 @@ class IOCRecord(BaseModel):
 
 class ThreatFeedItem(BaseModel):
     """Generic threat feed item from CISA KEV, GreyNoise, or RSS."""
+
     title: str
     description: str
     url: str
@@ -129,12 +139,14 @@ class ThreatFeedItem(BaseModel):
 
 # ─── Normalized cross-source model ────────────────────────────────────────────
 
+
 class NormalizedThreat(BaseModel):
     """
     Canonical representation after normalization.
     All raw records collapse into this schema before correlation.
     """
-    content_hash: str = ""          # populated by pipeline
+
+    content_hash: str = ""  # populated by pipeline
     threat_type: ThreatType
     title: str
     description: str
@@ -149,13 +161,21 @@ class NormalizedThreat(BaseModel):
     # fished the type out of `tags` (VT enrichment, sidecar, report break-
     # downs) now read it directly — no substring-matching hack.
     ioc_type: IOCType | None = None
+    # Provider-original IOC confidence (`IOCRecord.confidence`, 0.0-1.0)
+    # snapshot at normalization time. Populated only for `threat_type == "ioc"`.
+    # Downstream consumers that need the *raw* confidence — e.g. the IOC
+    # sidecar's firewall/DNS-block gate in `scripts/extract_iocs.py` — read
+    # this instead of deriving from `effective_severity`, which would reflect
+    # post-enrichment severity bumps (EPSS/VT/Shodan) rather than the original
+    # provider signal.
+    original_confidence: float | None = None
     affected_products: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     references: list[str] = Field(default_factory=list)
     first_seen: datetime | None = None
     last_seen: datetime | None = None
     raw_ids: list[str] = Field(default_factory=list)
-    ingested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    ingested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # ── Enrichment overlay (immutable-enrichment pattern) ──────────────────
     # Enrichment agents (EPSS, VirusTotal, Shodan, GitHub Advisory) never
@@ -167,6 +187,14 @@ class NormalizedThreat(BaseModel):
     # still read `severity` / `tags`.
     enriched_severity: Severity | None = None
     enriched_tags: list[str] = Field(default_factory=list)
+    # Per-agent idempotency marker — agents that have already applied their
+    # overlay to this threat add their name here and skip on re-entry. The
+    # graph runs enrichment once today (the DAG has no loop back into
+    # `enrich`), but the flag makes a future remediation loop safe:
+    # double-bumps from a second EPSS pass would otherwise be non-obvious.
+    # Names are stable strings matching the `@enrichment_agent(name=...)`
+    # decorator argument.
+    enrichments_applied: list[str] = Field(default_factory=list)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -206,10 +234,12 @@ class NormalizedThreat(BaseModel):
 
 # ─── LLM correlation output ───────────────────────────────────────────────────
 
+
 class CorrelatedIntelReport(BaseModel):
     """Structured output from the LLM correlation agent."""
+
     report_id: str
-    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     executive_summary: str
     critical_findings: list[str] = Field(default_factory=list)
     threat_clusters: list[dict[str, Any]] = Field(default_factory=list)
@@ -223,8 +253,10 @@ class CorrelatedIntelReport(BaseModel):
 
 # ─── Swarm state (LangGraph StateGraph node) ─────────────────────────────────
 
+
 class AgentResult(BaseModel):
     """Result envelope for each parallel agent."""
+
     agent_name: str
     success: bool
     records: list[NormalizedThreat] = Field(default_factory=list)
@@ -238,8 +270,9 @@ class SwarmState(BaseModel):
     LangGraph state — flows through every node in the DAG.
     Immutable fields set at init; mutable fields accumulated by agents.
     """
+
     run_id: str
-    triggered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    triggered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # set by orchestrator
     query_keywords: list[str] = Field(default_factory=list)
@@ -264,7 +297,7 @@ class SwarmState(BaseModel):
     errors: list[str] = Field(default_factory=list)
     completed: bool = False
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def total_raw_records(self) -> int:
         return sum(r.items_fetched for r in self.agent_results)
@@ -272,8 +305,10 @@ class SwarmState(BaseModel):
 
 # ─── V2 enrichment models ─────────────────────────────────────────────────────
 
+
 class EPSSScore(BaseModel):
     """FIRST.org Exploit Prediction Scoring System score for a CVE."""
+
     cve_id: str
     epss: float = Field(ge=0.0, le=1.0)
     percentile: float = Field(ge=0.0, le=1.0)
@@ -286,6 +321,7 @@ class EPSSScore(BaseModel):
 
 class VTReport(BaseModel):
     """VirusTotal enrichment for an IOC."""
+
     ioc_value: str
     ioc_type: str
     malicious_count: int = 0
@@ -303,6 +339,7 @@ class VTReport(BaseModel):
 
 class GHAdvisory(BaseModel):
     """GitHub Advisory Database entry."""
+
     ghsa_id: str
     cve_id: str | None = None
     summary: str

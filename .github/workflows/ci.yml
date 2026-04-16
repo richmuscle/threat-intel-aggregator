@@ -1,0 +1,63 @@
+name: CI
+
+# Solo-project CI — single Python version (matches `requires-python`).
+# Ruff and pytest are blocking; mypy runs advisory-only so a typing
+# regression doesn't pin a feature branch while the fix is in flight.
+# Flip `continue-on-error: false` on the mypy step to promote it to blocking.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  # Cancel superseded runs on the same branch — saves CI minutes on rapid
+  # push-to-PR workflows.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ruff + mypy + pytest (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          # pip-cache keyed on pyproject.toml so upper-bound pin bumps
+          # invalidate the cache without manual housekeeping.
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project (+ dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff — lint (blocking)
+        run: python -m ruff check src/ tests/
+
+      - name: Ruff — format check (blocking)
+        run: python -m ruff format --check src/ tests/
+
+      - name: Mypy — strict type check (blocking)
+        # Promoted from advisory on the P1-C pass — strict mode is at 0
+        # errors, so any regression should fail the build. To demote back
+        # (e.g. during a large refactor), set `continue-on-error: true`.
+        run: python -m mypy src/
+
+      - name: Pytest — unit + integration (blocking)
+        env:
+          # Set a stable dummy key so the API auth tests don't pick up the
+          # runner's real env by accident. Individual tests override this via
+          # the `_isolate_tia_api_key` fixture.
+          TIA_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+        run: python -m pytest tests/ -q

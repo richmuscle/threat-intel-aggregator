@@ -61,6 +61,7 @@ def _build_config() -> dict:
             "github_token":         _secret("GITHUB_TOKEN"),
             "cve_days_back":        int(os.getenv("CVE_DAYS_BACK", "7")),
             "attack_platform":      os.getenv("ATTACK_PLATFORM", "Windows"),
+            "llm_model":            os.getenv("LLM_MODEL", "claude-opus-4-20250514"),
         }
     }
 

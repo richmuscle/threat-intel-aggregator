@@ -3,9 +3,12 @@ GitHub Advisory Database client — free REST API, no key required.
 Pulls supply-chain CVE context: affected packages, patched versions, GHSA IDs.
 Pairs with NVD agent to give developer-level actionability to every CVE.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import contextlib
+from datetime import datetime
+from typing import Any
 
 import structlog
 
@@ -62,7 +65,7 @@ class GitHubAdvisoryClient(BaseAPIClient):
         limit: int = 50,
     ) -> list[GHAdvisory]:
         """Fetch recent high/critical GitHub advisories."""
-        params: dict = {
+        params: dict[str, Any] = {
             "severity": severity,
             "per_page": min(limit, 100),
             "sort": "published",
@@ -74,7 +77,11 @@ class GitHubAdvisoryClient(BaseAPIClient):
         try:
             data = await self.get("/advisories", params=params)
             advisories = data if isinstance(data, list) else []
-            return [self._parse_advisory(a) for a in advisories if isinstance(a, dict) and a.get("ghsa_id")]
+            return [
+                self._parse_advisory(a)
+                for a in advisories
+                if isinstance(a, dict) and a.get("ghsa_id")
+            ]
         except Exception as exc:
             logger.error("gh_advisories_failed", error=str(exc))
             return []
@@ -89,7 +96,7 @@ class GitHubAdvisoryClient(BaseAPIClient):
         return results
 
     @staticmethod
-    def _parse_advisory(data: dict) -> GHAdvisory:
+    def _parse_advisory(data: dict[str, Any]) -> GHAdvisory:
         ghsa_id = data.get("ghsa_id", "")
         cve_id = data.get("cve_id")
         summary = data.get("summary", "")[:500]
@@ -100,7 +107,8 @@ class GitHubAdvisoryClient(BaseAPIClient):
         affected_packages: list[str] = []
         patched_versions: list[str] = []
         for vuln in data.get("vulnerabilities", []):
-            if not isinstance(vuln, dict): continue
+            if not isinstance(vuln, dict):
+                continue
             pkg = vuln.get("package", {})
             ecosystem = pkg.get("ecosystem", "")
             name = pkg.get("name", "")
@@ -110,15 +118,17 @@ class GitHubAdvisoryClient(BaseAPIClient):
             if patched:
                 patched_versions.append(patched)
 
-        refs = [r.get("url", "") for r in data.get("references", []) if isinstance(r, dict) and r.get("url")]
+        refs = [
+            r.get("url", "")
+            for r in data.get("references", [])
+            if isinstance(r, dict) and r.get("url")
+        ]
 
         published_str = data.get("published_at")
         published = None
         if published_str:
-            try:
+            with contextlib.suppress(ValueError):
                 published = datetime.fromisoformat(published_str.replace("Z", "+00:00"))
-            except ValueError:
-                pass
 
         return GHAdvisory(
             ghsa_id=ghsa_id,

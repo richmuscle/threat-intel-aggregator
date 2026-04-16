@@ -1,7 +1,9 @@
 """CVE Scraper Agent — parallel node in the LangGraph swarm."""
+
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import structlog
 
@@ -12,7 +14,7 @@ from src.tools import NVDClient
 logger = structlog.get_logger(__name__)
 
 
-async def cve_scraper_agent(state: SwarmState, config: dict) -> dict:
+async def cve_scraper_agent(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
     """
     LangGraph node: fetches CVEs from NVD, returns AgentResult.
     Runs in parallel with ATT&CK mapper, IOC extractor, feed aggregator.
@@ -62,4 +64,4 @@ async def cve_scraper_agent(state: SwarmState, config: dict) -> dict:
             duration_ms=duration_ms,
         )
 
-    return {"agent_results": state.agent_results + [result]}
+    return {"agent_results": [*state.agent_results, result]}

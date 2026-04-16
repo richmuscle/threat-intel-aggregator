@@ -7,9 +7,8 @@ applies per-tier quotas with leftover rollover, and round-robins across
 `threat_type` inside each tier so no single ingestion source crowds out
 the others. This file locks that behaviour against regression.
 """
-from __future__ import annotations
 
-import pytest
+from __future__ import annotations
 
 from src.agents.correlation_agent import MAX_PROMPT_THREATS, _stratified_sample
 from src.models import NormalizedThreat, Severity
@@ -26,7 +25,6 @@ def _threat(tt: str, sev: Severity, label: str = "") -> NormalizedThreat:
 
 
 class TestStratifiedSample:
-
     def test_empty_input_returns_empty(self) -> None:
         assert _stratified_sample([], limit=10) == []
 
@@ -44,8 +42,8 @@ class TestStratifiedSample:
         """
         # 12 threats, all HIGH: 6 cves, 3 iocs, 2 techniques, 1 feed_item.
         threats = (
-            [_threat("cve",       Severity.HIGH) for _ in range(6)]
-            + [_threat("ioc",       Severity.HIGH) for _ in range(3)]
+            [_threat("cve", Severity.HIGH) for _ in range(6)]
+            + [_threat("ioc", Severity.HIGH) for _ in range(3)]
             + [_threat("technique", Severity.HIGH) for _ in range(2)]
             + [_threat("feed_item", Severity.HIGH) for _ in range(1)]
         )
@@ -60,11 +58,11 @@ class TestStratifiedSample:
         """CRITICAL items dominate the sample over HIGH/MEDIUM when forced."""
         threats = (
             [_threat("cve", Severity.CRITICAL) for _ in range(10)]
-            + [_threat("cve", Severity.HIGH)   for _ in range(50)]
+            + [_threat("cve", Severity.HIGH) for _ in range(50)]
             + [_threat("cve", Severity.MEDIUM) for _ in range(40)]
         )
         result = _stratified_sample(threats, limit=20)
-        # With the CRITICAL quota of 50% × 20 = 10 slots, all 10 CRITICAL
+        # With the CRITICAL quota of 50% x 20 = 10 slots, all 10 CRITICAL
         # items should make it in, plus some HIGH/MEDIUM filling remainder.
         critical_count = sum(1 for t in result if t.severity == Severity.CRITICAL)
         assert critical_count == 10
@@ -72,10 +70,9 @@ class TestStratifiedSample:
     def test_quota_rollover_when_critical_sparse(self) -> None:
         """Unused CRITICAL slots roll forward to HIGH — never waste budget."""
         # 1 CRITICAL (well below the 50% quota), 50 HIGH available.
-        threats = (
-            [_threat("cve", Severity.CRITICAL)]
-            + [_threat("cve", Severity.HIGH) for _ in range(50)]
-        )
+        threats = [_threat("cve", Severity.CRITICAL)] + [
+            _threat("cve", Severity.HIGH) for _ in range(50)
+        ]
         result = _stratified_sample(threats, limit=10)
         assert len(result) == 10
         # All 10 slots filled, not just 1 CRITICAL + 3 HIGH from raw quota.
@@ -89,7 +86,7 @@ class TestStratifiedSample:
         raw_medium = _threat("cve", Severity.MEDIUM)
         raw_medium.enriched_severity = Severity.CRITICAL
         other_criticals = [_threat("cve", Severity.CRITICAL) for _ in range(3)]
-        other_lows      = [_threat("cve", Severity.LOW)      for _ in range(20)]
+        other_lows = [_threat("cve", Severity.LOW) for _ in range(20)]
         result = _stratified_sample([raw_medium, *other_criticals, *other_lows], limit=5)
         # The enriched record must appear in the sample — its effective
         # severity puts it in the CRITICAL tier regardless of raw severity.
@@ -104,4 +101,4 @@ class TestStratifiedSample:
     def test_respects_custom_limit(self) -> None:
         threats = [_threat("cve", Severity.HIGH) for _ in range(100)]
         assert len(_stratified_sample(threats, limit=25)) == 25
-        assert len(_stratified_sample(threats, limit=5))  == 5
+        assert len(_stratified_sample(threats, limit=5)) == 5

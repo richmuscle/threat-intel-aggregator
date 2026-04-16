@@ -1,27 +1,25 @@
 """Unit tests — swarm agents with mocked tool clients."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.agents.attack_mapper import attack_mapper_agent
+from src.agents.cve_scraper import cve_scraper_agent
+from src.agents.ioc_extractor import ioc_extractor_agent
 from src.models import (
-    AgentResult,
     ATTACKTechnique,
     CVERecord,
     IOCRecord,
-    Severity,
     SwarmState,
     ThreatSource,
 )
-from src.agents.cve_scraper import cve_scraper_agent
-from src.agents.attack_mapper import attack_mapper_agent
-from src.agents.ioc_extractor import ioc_extractor_agent
-from src.agents.feed_aggregator import feed_aggregator_agent
-
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def base_state() -> SwarmState:
@@ -49,8 +47,8 @@ def sample_cves() -> list[CVERecord]:
         CVERecord(
             cve_id=f"CVE-2024-{i:05d}",
             description=f"Test CVE {i} ransomware related.",
-            published=datetime(2024, 1, i + 1, tzinfo=timezone.utc),
-            last_modified=datetime(2024, 1, i + 2, tzinfo=timezone.utc),
+            published=datetime(2024, 1, i + 1, tzinfo=UTC),
+            last_modified=datetime(2024, 1, i + 2, tzinfo=UTC),
             cvss_v3_score=float(7 + (i % 3)),
             source=ThreatSource.NVD,
         )
@@ -89,6 +87,7 @@ def sample_iocs() -> list[IOCRecord]:
 
 
 # ── CVE Scraper Agent ─────────────────────────────────────────────────────────
+
 
 class TestCVEScraperAgent:
     @pytest.mark.asyncio
@@ -131,6 +130,7 @@ class TestCVEScraperAgent:
 
 # ── ATT&CK Mapper Agent ───────────────────────────────────────────────────────
 
+
 class TestATTACKMapperAgent:
     @pytest.mark.asyncio
     async def test_success_returns_normalized_techniques(
@@ -168,6 +168,7 @@ class TestATTACKMapperAgent:
 
 # ── IOC Extractor Agent ───────────────────────────────────────────────────────
 
+
 class TestIOCExtractorAgent:
     @pytest.mark.asyncio
     async def test_merges_otx_and_abuseipdb(
@@ -178,7 +179,9 @@ class TestIOCExtractorAgent:
 
         with (
             patch("src.agents.ioc_extractor._fetch_otx", new=AsyncMock(return_value=otx_iocs)),
-            patch("src.agents.ioc_extractor._fetch_abuseipdb", new=AsyncMock(return_value=abuse_iocs)),
+            patch(
+                "src.agents.ioc_extractor._fetch_abuseipdb", new=AsyncMock(return_value=abuse_iocs)
+            ),
         ):
             result_dict = await ioc_extractor_agent(base_state, base_config)
 
@@ -206,8 +209,13 @@ class TestIOCExtractorAgent:
         )
 
         with (
-            patch("src.agents.ioc_extractor._fetch_otx", new=AsyncMock(return_value=[duplicate_ioc])),
-            patch("src.agents.ioc_extractor._fetch_abuseipdb", new=AsyncMock(return_value=[same_from_abuse])),
+            patch(
+                "src.agents.ioc_extractor._fetch_otx", new=AsyncMock(return_value=[duplicate_ioc])
+            ),
+            patch(
+                "src.agents.ioc_extractor._fetch_abuseipdb",
+                new=AsyncMock(return_value=[same_from_abuse]),
+            ),
         ):
             result_dict = await ioc_extractor_agent(base_state, base_config)
 
@@ -220,7 +228,10 @@ class TestIOCExtractorAgent:
     ) -> None:
         with (
             patch("src.agents.ioc_extractor._fetch_otx", new=AsyncMock(return_value=sample_iocs)),
-            patch("src.agents.ioc_extractor._fetch_abuseipdb", new=AsyncMock(side_effect=Exception("timeout"))),
+            patch(
+                "src.agents.ioc_extractor._fetch_abuseipdb",
+                new=AsyncMock(side_effect=Exception("timeout")),
+            ),
         ):
             result_dict = await ioc_extractor_agent(base_state, base_config)
 

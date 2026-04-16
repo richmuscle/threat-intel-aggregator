@@ -1,0 +1,57 @@
+# Templated one-shot swarm run, parameterised on the keyword instance name.
+#
+# Usage:
+#   sudo systemctl start threat-intel@ransomware
+#   sudo systemctl start threat-intel@log4j
+#
+# The `%i` expands to the instance name (word after `@`) and is passed as
+# `--keywords`. Pair with `threat-intel@.timer` for a scheduled run.
+#
+# Install:
+#   sudo cp deploy/systemd/threat-intel@.service  /etc/systemd/system/
+#   sudo cp deploy/systemd/threat-intel@.timer    /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now threat-intel@ransomware.timer
+
+[Unit]
+Description=Threat Intel Aggregator — swarm run (keywords=%i)
+Documentation=https://github.com/YOU/threat-intel-aggregator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tia
+Group=tia
+WorkingDirectory=/opt/threat-intel-aggregator
+
+EnvironmentFile=/etc/threat-intel-aggregator/env
+
+ExecStart=/opt/threat-intel-aggregator/.venv/bin/python main.py \
+    --keywords %i \
+    --max-cves  50 \
+    --max-iocs 100
+
+# A single run can legitimately take minutes (Shodan free tier is 1 req/s,
+# VT is 4/min). Cap at 30 min so a hung upstream doesn't block the timer.
+TimeoutStartSec=1800
+
+# ── Hardening ── (same envelope as threat-intel-api.service) ───────────────
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/opt/threat-intel-aggregator/output /opt/threat-intel-aggregator/logs
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources

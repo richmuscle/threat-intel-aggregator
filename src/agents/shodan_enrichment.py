@@ -3,7 +3,10 @@ Shodan Enrichment Agent — internet exposure intelligence.
 Runs POST-normalization to enrich critical IPs with port/service/CVE data.
 Free tier: conservative 5 lookups max. Paid: increase max_lookups.
 """
+
 from __future__ import annotations
+
+from typing import Any
 
 import structlog
 
@@ -20,7 +23,7 @@ _DANGEROUS_PORTS = {3389, 445, 135, 22, 23, 5900}
 
 
 @enrichment_agent("shodan_enrichment")
-async def shodan_enrichment_agent(state: SwarmState, config: dict) -> EnrichmentResult:
+async def shodan_enrichment_agent(state: SwarmState, config: dict[str, Any]) -> EnrichmentResult:
     """
     Enriches the top CRITICAL IPs with Shodan host data.
     Adds open ports, running services, and CVEs on exposed services as
@@ -56,11 +59,16 @@ async def shodan_enrichment_agent(state: SwarmState, config: dict) -> Enrichment
 
     enriched_count = 0
     for threat in state.normalized_threats:
+        # Idempotency guard (P1-B): skip threats we've already overlayed.
+        if "shodan" in threat.enrichments_applied:
+            continue
+        touched = False
         for ioc_val in threat.ioc_values:
             host_data = enriched.get(ioc_val)
             if not host_data:
                 continue
             enriched_count += 1
+            touched = True
             for port in host_data.get("open_ports", [])[:5]:
                 threat.enriched_tags.append(f"port:{port}")
             # Shodan-discovered CVEs live as overlay tags rather than being
@@ -72,5 +80,7 @@ async def shodan_enrichment_agent(state: SwarmState, config: dict) -> Enrichment
             if set(host_data.get("open_ports", [])) & _DANGEROUS_PORTS:
                 threat.enriched_severity = Severity.CRITICAL
                 threat.enriched_tags.append("shodan-exposed-dangerous-port")
+        if touched:
+            threat.enrichments_applied.append("shodan")
 
     return [], enriched_count, {"ips_enriched": enriched_count}

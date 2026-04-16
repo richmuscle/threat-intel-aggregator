@@ -2,12 +2,14 @@
 Correlation Agent — Claude-powered cross-source enrichment and clustering.
 Uses structured tool calls, not free-text prompting.
 """
+
 from __future__ import annotations
 
 import json
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 import anthropic
 import structlog
@@ -38,11 +40,11 @@ _SEVERITY_ORDER: tuple[Severity, ...] = (
 # sees the long-tail shape without flooding the prompt.
 _TIER_QUOTA: dict[Severity, float] = {
     Severity.CRITICAL: 0.50,
-    Severity.HIGH:     0.30,
-    Severity.MEDIUM:   0.12,
-    Severity.LOW:      0.05,
-    Severity.INFO:     0.02,
-    Severity.UNKNOWN:  0.01,
+    Severity.HIGH: 0.30,
+    Severity.MEDIUM: 0.12,
+    Severity.LOW: 0.05,
+    Severity.INFO: 0.02,
+    Severity.UNKNOWN: 0.01,
 }
 
 logger = structlog.get_logger(__name__)
@@ -70,7 +72,10 @@ CORRELATION_TOOL = {
                     "type": "object",
                     "properties": {
                         "cluster_name": {"type": "string"},
-                        "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
+                        "severity": {
+                            "type": "string",
+                            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                        },
                         "threat_ids": {"type": "array", "items": {"type": "string"}},
                         "narrative": {"type": "string"},
                         "mitre_techniques": {"type": "array", "items": {"type": "string"}},
@@ -229,7 +234,7 @@ has type domain or ipv4, include it verbatim in a relevant cluster's
 threat_ids so firewall/DNS blocking tooling picks it up."""
 
 
-async def correlation_agent(state: SwarmState, config: dict) -> dict:
+async def correlation_agent(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
     """
     LangGraph node: LLM-powered correlation over all normalized threats.
     Uses Claude structured tool calls for typed output — no JSON parsing hacks.
@@ -241,7 +246,7 @@ async def correlation_agent(state: SwarmState, config: dict) -> dict:
 
     if not state.normalized_threats:
         logger.warning("no_threats_to_correlate", agent=agent_name)
-        return {"errors": state.errors + ["correlation_agent: no normalized threats"]}
+        return {"errors": [*state.errors, "correlation_agent: no normalized threats"]}
 
     logger.info(
         "agent_start",
@@ -251,9 +256,14 @@ async def correlation_agent(state: SwarmState, config: dict) -> dict:
 
     try:
         client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+        model = settings.get("llm_model", "claude-opus-4-20250514")
 
-        response = await client.messages.create(
-            model="claude-opus-4-20250514",
+        # `tools` / `tool_choice` are TypedDict params in the Anthropic SDK;
+        # our dict literals are structurally valid but don't satisfy the SDK's
+        # overload resolver. Suppressing at the call — alternative is to
+        # import `ToolParam` / `ToolChoiceToolParam` solely for annotation.
+        response = await client.messages.create(  # type: ignore[call-overload]
+            model=model,
             max_tokens=4096,
             tools=[CORRELATION_TOOL],
             tool_choice={"type": "tool", "name": "produce_intel_report"},
@@ -273,7 +283,7 @@ async def correlation_agent(state: SwarmState, config: dict) -> dict:
         if not tool_block:
             raise ValueError("LLM did not return tool_use block")
 
-        payload: dict = tool_block.input
+        payload: dict[str, Any] = tool_block.input
         severity_breakdown = {
             s.value: sum(1 for t in state.normalized_threats if t.effective_severity == s)
             for s in Severity
@@ -281,7 +291,7 @@ async def correlation_agent(state: SwarmState, config: dict) -> dict:
 
         report = CorrelatedIntelReport(
             report_id=f"TIA-{state.run_id[:8].upper()}",
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             executive_summary=payload["executive_summary"],
             critical_findings=payload["critical_findings"],
             threat_clusters=payload["threat_clusters"],
@@ -306,4 +316,4 @@ async def correlation_agent(state: SwarmState, config: dict) -> dict:
     except Exception as exc:
         duration_ms = (time.monotonic() - t0) * 1000
         logger.error("agent_failed", agent=agent_name, error=str(exc))
-        return {"errors": state.errors + [f"correlation_agent: {exc}"]}
+        return {"errors": [*state.errors, f"correlation_agent: {exc}"]}

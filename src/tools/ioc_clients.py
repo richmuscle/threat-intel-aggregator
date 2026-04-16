@@ -2,6 +2,7 @@
 IOC clients — AlienVault OTX and AbuseIPDB.
 Both run concurrently via asyncio.gather inside the IOC extractor agent.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -37,7 +38,7 @@ class OTXClient(BaseAPIClient):
         return records
 
     async def fetch_iocs_for_cve(self, cve_id: str) -> list[IOCRecord]:
-        data = await self.get(f"/api/v1/pulses/search", params={"q": cve_id, "limit": 20})
+        data = await self.get("/api/v1/pulses/search", params={"q": cve_id, "limit": 20})
         records: list[IOCRecord] = []
         for pulse in data.get("results", []):
             for indicator in pulse.get("indicators", []):
@@ -115,7 +116,9 @@ class AbuseIPDBClient(BaseAPIClient):
             sources=[ThreatSource.ABUSEIPDB],
         )
 
-    async def fetch_blocklist(self, confidence_minimum: int = 90, limit: int = 100) -> list[IOCRecord]:
+    async def fetch_blocklist(
+        self, confidence_minimum: int = 90, limit: int = 100
+    ) -> list[IOCRecord]:
         data = await self.get(
             "/api/v2/blacklist",
             params={"confidenceMinimum": confidence_minimum, "limit": limit},

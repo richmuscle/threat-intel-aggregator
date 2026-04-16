@@ -4,10 +4,11 @@ Analyzes keywords and decides which agents to activate and with what parameters.
 Runs BEFORE the parallel ingest fan-out.
 Example: "LockBit" → activate ransomware IOC mode, increase KEV limit, focus ATT&CK on impact tactics.
 """
+
 from __future__ import annotations
 
-import json
 import time
+from typing import Any
 
 import anthropic
 import structlog
@@ -25,7 +26,14 @@ SUPERVISOR_TOOL = {
         "properties": {
             "threat_category": {
                 "type": "string",
-                "enum": ["ransomware", "apt", "phishing", "supply_chain", "infrastructure", "generic"],
+                "enum": [
+                    "ransomware",
+                    "apt",
+                    "phishing",
+                    "supply_chain",
+                    "infrastructure",
+                    "generic",
+                ],
                 "description": "Primary threat category inferred from keywords.",
             },
             "activate_agents": {
@@ -60,7 +68,7 @@ SUPERVISOR_TOOL = {
 }
 
 
-async def supervisor_agent(state: SwarmState, config: dict) -> dict:
+async def supervisor_agent(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
     """
     Pre-ingest supervisor — configures swarm routing based on query analysis.
     Falls back to default full-swarm config if LLM call fails.
@@ -78,25 +86,29 @@ async def supervisor_agent(state: SwarmState, config: dict) -> dict:
 
     try:
         client = anthropic.AsyncAnthropic(api_key=api_key)
-        response = await client.messages.create(
-            model="claude-opus-4-20250514",
+        model = settings.get("llm_model", "claude-opus-4-20250514")
+        # See correlation_agent for the SDK-TypedDict overload suppression rationale.
+        response = await client.messages.create(  # type: ignore[call-overload]
+            model=model,
             max_tokens=512,
             tools=[SUPERVISOR_TOOL],
             tool_choice={"type": "tool", "name": "configure_swarm"},
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Configure a threat intelligence swarm for these keywords: {keywords}\n\n"
-                    "Available agents: cve_scraper (NVD CVEs), attack_mapper (MITRE ATT&CK), "
-                    "ioc_extractor (OTX+AbuseIPDB), feed_aggregator (CISA KEV), "
-                    "epss (exploit probability), virustotal (malware families), "
-                    "github_advisory (supply chain), shodan (exposed services)\n\n"
-                    "Configure parameters to maximise signal for these specific keywords. "
-                    "For ransomware: activate all agents, focus on impact/exfiltration tactics. "
-                    "For APT: increase CVE lookback, focus on persistence/lateral-movement. "
-                    "For supply chain: prioritise github_advisory and CVE scraper."
-                ),
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Configure a threat intelligence swarm for these keywords: {keywords}\n\n"
+                        "Available agents: cve_scraper (NVD CVEs), attack_mapper (MITRE ATT&CK), "
+                        "ioc_extractor (OTX+AbuseIPDB), feed_aggregator (CISA KEV), "
+                        "epss (exploit probability), virustotal (malware families), "
+                        "github_advisory (supply chain), shodan (exposed services)\n\n"
+                        "Configure parameters to maximise signal for these specific keywords. "
+                        "For ransomware: activate all agents, focus on impact/exfiltration tactics. "
+                        "For APT: increase CVE lookback, focus on persistence/lateral-movement. "
+                        "For supply chain: prioritise github_advisory and CVE scraper."
+                    ),
+                }
+            ],
         )
 
         tool_block = next((b for b in response.content if b.type == "tool_use"), None)
@@ -117,12 +129,16 @@ async def supervisor_agent(state: SwarmState, config: dict) -> dict:
     return {"swarm_config": _default_config()}
 
 
-def _default_config() -> dict:
+def _default_config() -> dict[str, Any]:
     return {
         "threat_category": "generic",
         "activate_agents": [
-            "cve_scraper", "attack_mapper", "ioc_extractor",
-            "feed_aggregator", "epss", "github_advisory",
+            "cve_scraper",
+            "attack_mapper",
+            "ioc_extractor",
+            "feed_aggregator",
+            "epss",
+            "github_advisory",
         ],
         "cve_days_back": 7,
         "ioc_limit": 100,

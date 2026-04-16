@@ -20,6 +20,7 @@ Graceful skip — never raises:
   * ES unreachable inside the 5 s connect timeout
   * 401 / 403 on the bulk request
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -51,6 +52,7 @@ INDEX_ALERTS_PREFIX = "threat-intel-alerts"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _month_suffix(when: datetime | None = None) -> str:
     """Return the YYYY.MM suffix used for monthly index rotation."""
@@ -91,8 +93,10 @@ def _make_ssl_context(ca_cert_path: str) -> ssl.SSLContext | bool:
     integration land docs while the CA fix is scheduled.
     """
     if os.getenv("ES_INSECURE_SKIP_VERIFY", "").lower() in ("1", "true", "yes"):
-        logger.warning("es_insecure_skip_verify",
-                       reason="ES_INSECURE_SKIP_VERIFY=1; soc-internal-ca lacks keyUsage")
+        logger.warning(
+            "es_insecure_skip_verify",
+            reason="ES_INSECURE_SKIP_VERIFY=1; soc-internal-ca lacks keyUsage",
+        )
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -195,6 +199,7 @@ async def _bulk_post(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+
 async def index_run(state: SwarmState) -> dict[str, Any]:
     """Bulk-index a completed swarm run into Elasticsearch.
 
@@ -219,12 +224,8 @@ async def index_run(state: SwarmState) -> dict[str, Any]:
     alerts_index = f"{INDEX_ALERTS_PREFIX}-{suffix}"
 
     ioc_actions = _build_ioc_actions(state.normalized_threats, iocs_index)
-    report_actions = (
-        _build_report_action(state.report, reports_index) if state.report else []
-    )
-    alert_actions = (
-        _build_alert_actions(state.report, alerts_index) if state.report else []
-    )
+    report_actions = _build_report_action(state.report, reports_index) if state.report else []
+    alert_actions = _build_alert_actions(state.report, alerts_index) if state.report else []
 
     counts: dict[str, Any] = {
         "iocs": len(ioc_actions),
@@ -237,9 +238,7 @@ async def index_run(state: SwarmState) -> dict[str, Any]:
         logger.info("es_index_empty_run", run_id=state.run_id)
         return counts
 
-    timeout = aiohttp.ClientTimeout(
-        total=TOTAL_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS
-    )
+    timeout = aiohttp.ClientTimeout(total=TOTAL_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             for label, actions in (

@@ -1,15 +1,14 @@
 """Unit tests — API tool clients with mocked HTTP responses."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.models import Severity, ThreatSource
-from src.tools.nvd_client import NVDClient
 from src.tools.ioc_clients import AbuseIPDBClient, OTXClient
-
+from src.tools.nvd_client import NVDClient
 
 # ── NVD Client tests ──────────────────────────────────────────────────────────
 
@@ -34,12 +33,8 @@ NVD_SAMPLE_RESPONSE = {
                         }
                     ]
                 },
-                "weaknesses": [
-                    {"description": [{"lang": "en", "value": "CWE-78"}]}
-                ],
-                "references": [
-                    {"url": "https://example.com/advisory"}
-                ],
+                "weaknesses": [{"description": [{"lang": "en", "value": "CWE-78"}]}],
+                "references": [{"url": "https://example.com/advisory"}],
                 "configurations": [],
             }
         }

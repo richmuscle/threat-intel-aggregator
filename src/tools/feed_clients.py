@@ -1,8 +1,9 @@
 """CISA Known Exploited Vulnerabilities + GreyNoise feed clients."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 
 import structlog
 
@@ -14,6 +15,7 @@ logger = structlog.get_logger(__name__)
 
 class CISAKEVClient(BaseAPIClient):
     """CISA Known Exploited Vulnerabilities catalog — no API key required."""
+
     base_url = "https://www.cisa.gov"
     calls_per_second = 2.0
 
@@ -29,9 +31,7 @@ class CISAKEVClient(BaseAPIClient):
         the user's query terms verbatim, and KEV records were being
         dropped for every run with `--keywords`.
         """
-        data = await self.get(
-            "/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-        )
+        data = await self.get("/sites/default/files/feeds/known_exploited_vulnerabilities.json")
         items: list[ThreatFeedItem] = []
         for vuln in data.get("vulnerabilities", []):
             cve_id = vuln.get("cveID", "")
@@ -88,12 +88,13 @@ def _parse_kev_date(raw: str | None) -> datetime:
     values elsewhere in the pipeline (e.g. `SwarmState.triggered_at`).
     """
     if not raw:
-        return datetime(2000, 1, 1, tzinfo=timezone.utc)
-    return datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+        return datetime(2000, 1, 1, tzinfo=UTC)
+    return datetime.fromisoformat(raw).replace(tzinfo=UTC)
 
 
 class GreyNoiseClient(BaseAPIClient):
     """GreyNoise community API — internet scanner / noise data."""
+
     base_url = "https://api.greynoise.io"
     calls_per_second = 1.0
 
@@ -112,7 +113,7 @@ class GreyNoiseClient(BaseAPIClient):
         if not is_valid_ip(ip):
             logger.warning("greynoise_invalid_ip_rejected", endpoint="riot", ip=ip[:64])
             return {}
-        return await self.get(f"/v3/riot/{ip}")
+        return cast("dict[str, Any]", await self.get(f"/v3/riot/{ip}"))
 
     async def fetch_noise_status(self, ip: str) -> dict[str, Any]:
         """Check if IP is known internet scanner.
@@ -122,7 +123,7 @@ class GreyNoiseClient(BaseAPIClient):
         if not is_valid_ip(ip):
             logger.warning("greynoise_invalid_ip_rejected", endpoint="noise", ip=ip[:64])
             return {}
-        return await self.get(f"/v3/noise/quick/{ip}")
+        return cast("dict[str, Any]", await self.get(f"/v3/noise/quick/{ip}"))
 
     async def fetch_gnql_stats(self, query: str = "tags:malware") -> list[ThreatFeedItem]:
         """Query GreyNoise GNQL for threat stats (requires paid key)."""
@@ -139,7 +140,7 @@ class GreyNoiseClient(BaseAPIClient):
                     title=f"GreyNoise: {count} IPs tagged '{tag}'",
                     description=f"GreyNoise reports {count} IPs with tag '{tag}' in the last 24h.",
                     url=f"https://viz.greynoise.io/query/?gnql=tags:{tag}",
-                    published=datetime.now(timezone.utc),
+                    published=datetime.now(UTC),
                     severity=Severity.MEDIUM if count > 100 else Severity.LOW,
                     tags=[tag, "greynoise", "scanner"],
                     source=ThreatSource.GREYNOISE,

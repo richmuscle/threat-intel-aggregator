@@ -2,7 +2,10 @@
 Normalization + dedup pipeline.
 Collapses all raw agent records into NormalizedThreat with hash-based dedup.
 """
+
 from __future__ import annotations
+
+from typing import cast
 
 import structlog
 
@@ -13,8 +16,8 @@ from src.models import (
     NormalizedThreat,
     Severity,
     ThreatFeedItem,
-    ThreatSource,
 )
+from src.models.threat import IOCType
 
 logger = structlog.get_logger(__name__)
 
@@ -49,17 +52,17 @@ def normalize_technique(technique: ATTACKTechnique) -> NormalizedThreat:
         technique_ids=[technique.technique_id],
         ioc_values=[],
         affected_products=technique.platforms[:5],
-        tags=[technique.tactic] + technique.data_sources[:3],
+        tags=[technique.tactic, *technique.data_sources[:3]],
         references=[technique.url] if technique.url else [],
     )
 
 
 _SEVERITY_RANK: dict[Severity, int] = {
-    Severity.UNKNOWN:  0,
-    Severity.INFO:     1,
-    Severity.LOW:      2,
-    Severity.MEDIUM:   3,
-    Severity.HIGH:     4,
+    Severity.UNKNOWN: 0,
+    Severity.INFO: 1,
+    Severity.LOW: 2,
+    Severity.MEDIUM: 3,
+    Severity.HIGH: 4,
     Severity.CRITICAL: 5,
 }
 
@@ -122,7 +125,15 @@ def normalize_ioc(ioc: IOCRecord) -> NormalizedThreat:
         cve_ids=[],
         technique_ids=[],
         ioc_values=[ioc.value],
-        ioc_type=ioc.ioc_type,  # type: ignore[arg-type]  # regex-validated on IOCRecord
+        # IOCRecord.ioc_type is a regex-validated `str` that matches the
+        # `IOCType` literal values exactly; cast makes the assignment typed.
+        ioc_type=cast("IOCType", ioc.ioc_type),
+        # Snapshot the provider-original confidence BEFORE enrichment can
+        # mutate severity/tags. Lets the IOC sidecar's firewall gate in
+        # `scripts/extract_iocs.py` consume raw provider confidence instead
+        # of deriving a synthetic value from (possibly enrichment-bumped)
+        # severity.
+        original_confidence=ioc.confidence,
         affected_products=[],
         tags=list(dict.fromkeys([*ioc.tags, ioc.ioc_type])),
         first_seen=ioc.first_seen,
@@ -168,10 +179,10 @@ class NormalizationPipeline:
         feed_items: list[ThreatFeedItem],
     ) -> tuple[list[NormalizedThreat], int]:
         raw: list[NormalizedThreat] = []
-        raw.extend(normalize_cve(c)           for c in cves)
-        raw.extend(normalize_technique(t)     for t in techniques)
-        raw.extend(normalize_ioc(i)           for i in iocs)
-        raw.extend(normalize_feed_item(f)     for f in feed_items)
+        raw.extend(normalize_cve(c) for c in cves)
+        raw.extend(normalize_technique(t) for t in techniques)
+        raw.extend(normalize_ioc(i) for i in iocs)
+        raw.extend(normalize_feed_item(f) for f in feed_items)
         return self.dedup(raw)
 
     def dedup(

@@ -16,15 +16,16 @@ not currently guaranteed. If remediation-on-low-confidence is ever wanted,
 model it as a separate driver (e.g. cron re-run with widened keywords),
 not an in-graph loop.
 """
+
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import anthropic
 import structlog
 
 from src.models import SwarmState
-from src.models.threat import CorrelatedIntelReport
 from src.tools.base_client import unwrap_secret
 
 logger = structlog.get_logger(__name__)
@@ -64,7 +65,7 @@ REFLECTION_TOOL = {
 }
 
 
-async def reflection_agent(state: SwarmState, config: dict) -> dict:
+async def reflection_agent(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
     """
     Post-correlation reflection pass.
     Adds confidence score and analyst notes to the report.
@@ -88,33 +89,37 @@ async def reflection_agent(state: SwarmState, config: dict) -> dict:
 
     try:
         client = anthropic.AsyncAnthropic(api_key=api_key)
+        model = settings.get("llm_model", "claude-opus-4-20250514")
 
         # Summarise report for reflection prompt
         cluster_summary = "\n".join(
-            f"- {c.get('cluster_name','?')} [{c.get('severity','?')}]: {c.get('narrative','')[:100]}"
+            f"- {c.get('cluster_name', '?')} [{c.get('severity', '?')}]: {c.get('narrative', '')[:100]}"
             for c in report.threat_clusters
         )
         sources_str = ", ".join(report.sources_queried)
         severity_str = str(report.severity_breakdown)
 
-        response = await client.messages.create(
-            model="claude-opus-4-20250514",
+        # See correlation_agent for the SDK-TypedDict overload suppression rationale.
+        response = await client.messages.create(  # type: ignore[call-overload]
+            model=model,
             max_tokens=1024,
             tools=[REFLECTION_TOOL],
             tool_choice={"type": "tool", "name": "reflect_on_report"},
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Critically evaluate this threat intelligence report:\n\n"
-                    f"Sources queried: {sources_str}\n"
-                    f"Threats processed: {report.total_threats_processed}\n"
-                    f"Severity breakdown: {severity_str}\n"
-                    f"Clusters:\n{cluster_summary}\n\n"
-                    f"Executive summary (first 300 chars): {report.executive_summary[:300]}\n\n"
-                    "Be critical. Identify: missing sources, weak evidence, over-confident claims, "
-                    "clusters that need more data, and genuinely well-supported findings."
-                ),
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Critically evaluate this threat intelligence report:\n\n"
+                        f"Sources queried: {sources_str}\n"
+                        f"Threats processed: {report.total_threats_processed}\n"
+                        f"Severity breakdown: {severity_str}\n"
+                        f"Clusters:\n{cluster_summary}\n\n"
+                        f"Executive summary (first 300 chars): {report.executive_summary[:300]}\n\n"
+                        "Be critical. Identify: missing sources, weak evidence, over-confident claims, "
+                        "clusters that need more data, and genuinely well-supported findings."
+                    ),
+                }
+            ],
         )
 
         tool_block = next((b for b in response.content if b.type == "tool_use"), None)
@@ -135,22 +140,32 @@ async def reflection_agent(state: SwarmState, config: dict) -> dict:
             f"**Analyst notes:** {analyst_notes}\n\n"
         )
         if strong:
-            reflection_md += "**Well-supported findings:**\n" + "\n".join(f"- {s}" for s in strong) + "\n\n"
+            reflection_md += (
+                "**Well-supported findings:**\n" + "\n".join(f"- {s}" for s in strong) + "\n\n"
+            )
         if gaps:
             reflection_md += "**Intelligence gaps:**\n" + "\n".join(f"- {g}" for g in gaps) + "\n\n"
         if low_conf:
-            reflection_md += "**Low-confidence clusters (treat with caution):**\n" + "\n".join(f"- {c}" for c in low_conf) + "\n"
+            reflection_md += (
+                "**Low-confidence clusters (treat with caution):**\n"
+                + "\n".join(f"- {c}" for c in low_conf)
+                + "\n"
+            )
 
-        updated_report = report.model_copy(update={
-            "markdown_report": (report.markdown_report or "") + reflection_md,
-        })
+        updated_report = report.model_copy(
+            update={
+                "markdown_report": (report.markdown_report or "") + reflection_md,
+            }
+        )
 
         # Append reflection notes to executive summary for JSON artifact
         if gaps:
             gaps_note = f" [Gaps: {'; '.join(gaps[:2])}]"
-            updated_report = updated_report.model_copy(update={
-                "executive_summary": updated_report.executive_summary + gaps_note,
-            })
+            updated_report = updated_report.model_copy(
+                update={
+                    "executive_summary": updated_report.executive_summary + gaps_note,
+                }
+            )
 
         duration_ms = (time.monotonic() - t0) * 1000
         logger.info(

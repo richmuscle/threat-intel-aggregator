@@ -3,9 +3,8 @@ EPSS (Exploit Prediction Scoring System) client — FIRST.org free API.
 No API key required. Returns exploit probability (0-1) per CVE.
 EPSS >= 0.5 = actively exploited in the wild with high probability.
 """
-from __future__ import annotations
 
-from datetime import datetime, timezone
+from __future__ import annotations
 
 import structlog
 
@@ -32,7 +31,7 @@ class EPSSClient(BaseAPIClient):
         batch_size = 100
 
         for i in range(0, len(cve_ids), batch_size):
-            batch = cve_ids[i:i + batch_size]
+            batch = cve_ids[i : i + batch_size]
             params = {"cve": ",".join(batch), "scope": "public"}
 
             try:
@@ -61,7 +60,9 @@ class EPSSClient(BaseAPIClient):
         scores = await self.fetch_scores([cve_id])
         return scores.get(cve_id)
 
-    async def fetch_top_exploited(self, limit: int = 100, threshold: float = 0.5) -> list[EPSSScore]:
+    async def fetch_top_exploited(
+        self, limit: int = 100, threshold: float = 0.5
+    ) -> list[EPSSScore]:
         """Fetch CVEs with EPSS score above threshold — actively exploited."""
         params = {
             "scope": "public",

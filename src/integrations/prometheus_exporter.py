@@ -16,6 +16,7 @@ pushgateway groups all runs under one job and the most recent push
 overwrites the previous (a Counter monotonically increasing across runs
 is what scrape-side ``rate()`` expects).
 """
+
 from __future__ import annotations
 
 import os
@@ -43,6 +44,7 @@ NFT_SET_NAME = "threat_block_ips"
 
 
 # ── nftables / hosts probes (graceful skip) ──────────────────────────────────
+
 
 def _count_blocked_ips() -> int:
     """Return the number of IPs in the nftables blocklist set, or 0 on failure."""
@@ -85,6 +87,7 @@ def _count_blocked_domains() -> int:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def push_metrics(state: SwarmState, run_duration_seconds: float) -> bool:
     """Push a snapshot of `state` to the configured pushgateway.

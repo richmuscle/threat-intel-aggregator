@@ -1,4 +1,5 @@
 """Elasticsearch indexer — bulk shape, ID strategy, graceful skip."""
+
 from __future__ import annotations
 
 import json
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
@@ -94,6 +96,7 @@ def _current_month_suffix() -> str:
 
 # ── Index naming ──────────────────────────────────────────────────────────────
 
+
 class TestIndexNaming:
     def test_iocs_index_uses_current_month(self) -> None:
         suffix = _current_month_suffix()
@@ -106,6 +109,7 @@ class TestIndexNaming:
 
 
 # ── Bulk shape & IDs ──────────────────────────────────────────────────────────
+
 
 class TestBulkShapeAndIDs:
     @pytest.mark.asyncio
@@ -135,9 +139,7 @@ class TestBulkShapeAndIDs:
         assert len(captured_bodies) == 3
 
         # ── Bulk body 1 — IOCs ────────────────────────────────────────────────
-        ioc_body = next(
-            b for b in captured_bodies if f"threat-intel-iocs-{suffix}" in b
-        )
+        ioc_body = next(b for b in captured_bodies if f"threat-intel-iocs-{suffix}" in b)
         # Each line is JSON; pairs of action+source.
         ioc_lines = [ln for ln in ioc_body.strip().split("\n") if ln]
         assert len(ioc_lines) == 4  # 2 IOCs, 2 lines each
@@ -149,9 +151,7 @@ class TestBulkShapeAndIDs:
         assert "@timestamp" in source_a
 
         # ── Bulk body 2 — Report ──────────────────────────────────────────────
-        report_body = next(
-            b for b in captured_bodies if f"threat-intel-reports-{suffix}" in b
-        )
+        report_body = next(b for b in captured_bodies if f"threat-intel-reports-{suffix}" in b)
         rep_lines = [ln for ln in report_body.strip().split("\n") if ln]
         assert len(rep_lines) == 2
         rep_action = json.loads(rep_lines[0])
@@ -166,9 +166,7 @@ class TestBulkShapeAndIDs:
         assert rep_source["cluster_summary"][0]["cve_count"] == 1
 
         # ── Bulk body 3 — Alerts ──────────────────────────────────────────────
-        alert_body = next(
-            b for b in captured_bodies if f"threat-intel-alerts-{suffix}" in b
-        )
+        alert_body = next(b for b in captured_bodies if f"threat-intel-alerts-{suffix}" in b)
         alert_lines = [ln for ln in alert_body.strip().split("\n") if ln]
         assert len(alert_lines) == 4  # 2 alerts, 2 lines each
         a_action = json.loads(alert_lines[0])
@@ -192,11 +190,10 @@ class TestBulkShapeAndIDs:
 
 # ── Auth headers ──────────────────────────────────────────────────────────────
 
+
 class TestAuth:
     @pytest.mark.asyncio
-    async def test_basic_auth_header_sent(
-        self, populated_state: SwarmState
-    ) -> None:
+    async def test_basic_auth_header_sent(self, populated_state: SwarmState) -> None:
         url = "https://127.0.0.1:9201/_bulk"
         captured_headers: list[dict[str, str]] = []
 
@@ -216,13 +213,11 @@ class TestAuth:
             await es_indexer.index_run(populated_state)
 
         # Content-Type must be NDJSON for the bulk endpoint.
-        assert any(
-            h.get("Content-Type") == "application/x-ndjson"
-            for h in captured_headers
-        )
+        assert any(h.get("Content-Type") == "application/x-ndjson" for h in captured_headers)
 
 
 # ── Graceful-skip paths ───────────────────────────────────────────────────────
+
 
 class TestGracefulSkip:
     @pytest.mark.asyncio
@@ -251,9 +246,7 @@ class TestGracefulSkip:
         assert result["skipped"] is True
 
     @pytest.mark.asyncio
-    async def test_skip_on_401_unauthorized(
-        self, populated_state: SwarmState
-    ) -> None:
+    async def test_skip_on_401_unauthorized(self, populated_state: SwarmState) -> None:
         url = "https://127.0.0.1:9201/_bulk"
         with aioresponses() as m:
             m.post(url, status=401, payload={"error": "unauthorized"})
@@ -261,9 +254,7 @@ class TestGracefulSkip:
         assert result["skipped"] is True
 
     @pytest.mark.asyncio
-    async def test_skip_on_403_forbidden(
-        self, populated_state: SwarmState
-    ) -> None:
+    async def test_skip_on_403_forbidden(self, populated_state: SwarmState) -> None:
         url = "https://127.0.0.1:9201/_bulk"
         with aioresponses() as m:
             m.post(url, status=403, payload={"error": "forbidden"})
@@ -271,9 +262,7 @@ class TestGracefulSkip:
         assert result["skipped"] is True
 
     @pytest.mark.asyncio
-    async def test_skip_on_connection_refused(
-        self, populated_state: SwarmState
-    ) -> None:
+    async def test_skip_on_connection_refused(self, populated_state: SwarmState) -> None:
         url = "https://127.0.0.1:9201/_bulk"
         with aioresponses() as m:
             m.post(
@@ -287,9 +276,7 @@ class TestGracefulSkip:
         assert result["skipped"] is True
 
     @pytest.mark.asyncio
-    async def test_empty_run_returns_zero_counts(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_empty_run_returns_zero_counts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # No threats and no report — no HTTP traffic should occur.
         empty = SwarmState(run_id="empty-run")
         result = await es_indexer.index_run(empty)

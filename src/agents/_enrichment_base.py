@@ -4,7 +4,7 @@ Shared envelope for enrichment-style agents.
 All four enrichment agents (EPSS / VirusTotal / GitHub Advisory / Shodan)
 repeat the same outer shape: start a stopwatch, do the work, package a
 success `AgentResult` on the happy path, package a failure `AgentResult` on
-any exception, return `{"agent_results": state.agent_results + [result]}`.
+any exception, return `{"agent_results": [*state.agent_results, result]}`.
 That's ~20 lines of boilerplate per agent, repeated four times.
 
 `@enrichment_agent(name=…)` absorbs the envelope. The decorated body is the
@@ -21,6 +21,7 @@ the return-dict shape the graph expects.
 This is *not* a LangGraph-node decorator — the enrichment agents run inside
 `_enrichment_node`'s `asyncio.gather`, not as standalone graph nodes.
 """
+
 from __future__ import annotations
 
 import functools
@@ -39,9 +40,7 @@ logger = structlog.get_logger(__name__)
 EnrichmentResult: TypeAlias = tuple[list[NormalizedThreat], int, dict[str, Any]] | None
 
 # Body signature the decorator wraps.
-EnrichmentBody: TypeAlias = Callable[
-    [SwarmState, dict[str, Any]], Awaitable[EnrichmentResult]
-]
+EnrichmentBody: TypeAlias = Callable[[SwarmState, dict[str, Any]], Awaitable[EnrichmentResult]]
 
 
 def enrichment_agent(
@@ -55,9 +54,10 @@ def enrichment_agent(
     exception becomes `success=False, error=str(exc)` — siblings in the
     same `gather()` are unaffected.
     """
-    def _decorator(body: EnrichmentBody) -> Callable[
-        [SwarmState, dict[str, Any]], Awaitable[dict[str, Any]]
-    ]:
+
+    def _decorator(
+        body: EnrichmentBody,
+    ) -> Callable[[SwarmState, dict[str, Any]], Awaitable[dict[str, Any]]]:
         @functools.wraps(body)
         async def _wrapped(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
             t0 = time.monotonic()
@@ -93,6 +93,8 @@ def enrichment_agent(
                     error=str(exc),
                     duration_ms=duration_ms,
                 )
-            return {"agent_results": state.agent_results + [ar]}
+            return {"agent_results": [*state.agent_results, ar]}
+
         return _wrapped
+
     return _decorator

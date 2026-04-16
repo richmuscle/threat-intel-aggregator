@@ -2,9 +2,10 @@
 Integration tests — full swarm pipeline with mocked external APIs.
 Tests the complete flow: agents → normalize → correlate → report.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,7 +19,6 @@ from src.models import (
     ThreatFeedItem,
     ThreatSource,
 )
-
 
 MOCK_CLAUDE_RESPONSE = {
     "content": [
@@ -74,8 +74,8 @@ def mock_cves() -> list[CVERecord]:
         CVERecord(
             cve_id="CVE-2024-00001",
             description="Critical RCE in ExampleLib used by ransomware groups.",
-            published=datetime(2024, 1, 15, tzinfo=timezone.utc),
-            last_modified=datetime(2024, 1, 20, tzinfo=timezone.utc),
+            published=datetime(2024, 1, 15, tzinfo=UTC),
+            last_modified=datetime(2024, 1, 20, tzinfo=UTC),
             cvss_v3_score=9.8,
             source=ThreatSource.NVD,
         )
@@ -117,7 +117,7 @@ def mock_feed_items() -> list[ThreatFeedItem]:
             title="CVE-2024-00001: ExampleLib RCE in CISA KEV",
             description="CISA confirms active exploitation.",
             url="https://cisa.gov/kev",
-            published=datetime(2024, 1, 22, tzinfo=timezone.utc),
+            published=datetime(2024, 1, 22, tzinfo=UTC),
             severity=Severity.CRITICAL,
             cve_refs=["CVE-2024-00001"],
             source=ThreatSource.CISA_KEV,
@@ -164,11 +164,15 @@ async def test_full_swarm_pipeline_happy_path(
         patch("src.agents.attack_mapper.MITREATTACKClient", return_value=attack_mock),
         patch("src.agents.ioc_extractor._fetch_otx", new=AsyncMock(return_value=mock_iocs)),
         patch("src.agents.ioc_extractor._fetch_abuseipdb", new=AsyncMock(return_value=[])),
-        patch("src.agents.feed_aggregator._fetch_cisa_kev", new=AsyncMock(return_value=mock_feed_items)),
+        patch(
+            "src.agents.feed_aggregator._fetch_cisa_kev",
+            new=AsyncMock(return_value=mock_feed_items),
+        ),
         patch("src.agents.feed_aggregator._fetch_greynoise", new=AsyncMock(return_value=[])),
         patch("src.agents.correlation_agent.anthropic.AsyncAnthropic", return_value=anthropic_mock),
     ):
         from src.graph.swarm import run_swarm
+
         state = await run_swarm(
             query_keywords=["ransomware"],
             max_cves=10,
@@ -220,6 +224,7 @@ async def test_full_swarm_pipeline_happy_path(
     # Sidecar is derived from normalized IOC threats; must contain at least
     # the mock IOCs injected above.
     import json as _json
+
     sidecar_data = _json.loads(iocs_sidecar[0].read_text())
     assert len(sidecar_data) >= 1
     assert all(r.get("ioc_type") and r.get("value") for r in sidecar_data)
@@ -234,14 +239,26 @@ async def test_swarm_handles_all_agents_failing(
     monkeypatch.chdir(tmp_path)
 
     with (
-        patch("src.agents.ioc_extractor._fetch_otx", new=AsyncMock(side_effect=Exception("timeout"))),
-        patch("src.agents.ioc_extractor._fetch_abuseipdb", new=AsyncMock(side_effect=Exception("timeout"))),
+        patch(
+            "src.agents.ioc_extractor._fetch_otx", new=AsyncMock(side_effect=Exception("timeout"))
+        ),
+        patch(
+            "src.agents.ioc_extractor._fetch_abuseipdb",
+            new=AsyncMock(side_effect=Exception("timeout")),
+        ),
         patch("src.agents.cve_scraper.NVDClient", side_effect=Exception("NVD down")),
         patch("src.agents.attack_mapper.MITREATTACKClient", side_effect=Exception("MITRE down")),
-        patch("src.agents.feed_aggregator._fetch_cisa_kev", new=AsyncMock(side_effect=Exception("CISA down"))),
-        patch("src.agents.feed_aggregator._fetch_greynoise", new=AsyncMock(side_effect=Exception("GN down"))),
+        patch(
+            "src.agents.feed_aggregator._fetch_cisa_kev",
+            new=AsyncMock(side_effect=Exception("CISA down")),
+        ),
+        patch(
+            "src.agents.feed_aggregator._fetch_greynoise",
+            new=AsyncMock(side_effect=Exception("GN down")),
+        ),
     ):
         from src.graph.swarm import run_swarm
+
         state = await run_swarm(
             query_keywords=[],
             config={"configurable": {"anthropic_api_key": "test-key"}},

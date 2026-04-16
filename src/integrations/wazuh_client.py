@@ -8,12 +8,13 @@ Graceful skip: if the Wazuh port isn't reachable (agent down, firewall, wrong
 host), the sender logs a warning and returns False. It never raises; the
 autoblock pipeline must not fail because the SIEM is offline.
 """
+
 from __future__ import annotations
 
 import json
 import socket
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -29,7 +30,7 @@ SYSLOG_PRI_LOCAL0_WARNING = (16 << 3) | 4
 
 def _syslog_rfc5424(msg: str, app: str = "threat-intel", hostname: str | None = None) -> bytes:
     """Format `msg` as a single RFC 5424 syslog frame."""
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     host = hostname or socket.gethostname()
     # <PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA MSG
     frame = f"<{SYSLOG_PRI_LOCAL0_WARNING}>1 {ts} {host} {app} - - - {msg}"
@@ -46,7 +47,7 @@ def _port_reachable(host: str, port: int, timeout: float = 0.5) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return False
 
 

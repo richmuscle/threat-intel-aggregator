@@ -1,7 +1,9 @@
 """ATT&CK Mapper Agent — maps techniques relevant to current threat landscape."""
+
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import structlog
 
@@ -24,7 +26,7 @@ DEFAULT_TACTICS = [
 ]
 
 
-async def attack_mapper_agent(state: SwarmState, config: dict) -> dict:
+async def attack_mapper_agent(state: SwarmState, config: dict[str, Any]) -> dict[str, Any]:
     """
     LangGraph node: fetches relevant ATT&CK techniques.
     Prioritizes techniques matching query keywords or recent CVE products.
@@ -44,11 +46,9 @@ async def attack_mapper_agent(state: SwarmState, config: dict) -> dict:
         if state.query_keywords:
             keywords_lower = [k.lower() for k in state.query_keywords]
             techniques = [
-                t for t in techniques
-                if any(
-                    kw in t.name.lower() or kw in t.description.lower()
-                    for kw in keywords_lower
-                )
+                t
+                for t in techniques
+                if any(kw in t.name.lower() or kw in t.description.lower() for kw in keywords_lower)
             ]
 
         # Cap at reasonable limit for correlation
@@ -81,4 +81,4 @@ async def attack_mapper_agent(state: SwarmState, config: dict) -> dict:
             duration_ms=duration_ms,
         )
 
-    return {"agent_results": state.agent_results + [result]}
+    return {"agent_results": [*state.agent_results, result]}

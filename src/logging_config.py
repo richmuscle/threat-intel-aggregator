@@ -2,15 +2,20 @@
 Structured logging — compatible with structlog 24+ and Python 3.14.
 Call configure_logging() at application startup.
 """
+
 from __future__ import annotations
 
 import logging
-import sys
+from typing import Any
 
 import structlog
 
 
 def configure_logging(json_logs: bool = False, log_level: str = "INFO") -> None:
+    # `renderer` is either a `JSONRenderer` or a `ConsoleRenderer` — mypy
+    # infers the first branch and rejects the reassignment. Widening the
+    # annotation is simpler than importing both concrete types for a union.
+    renderer: Any
     if json_logs:
         renderer = structlog.processors.JSONRenderer()
     else:

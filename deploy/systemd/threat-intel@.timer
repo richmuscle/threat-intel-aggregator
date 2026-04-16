@@ -1,0 +1,22 @@
+# 6-hour schedule for the templated swarm run. Pair with threat-intel@.service.
+#
+# Usage:
+#   sudo systemctl enable --now threat-intel@ransomware.timer
+#   systemctl list-timers 'threat-intel@*.timer'
+
+[Unit]
+Description=Threat Intel Aggregator — scheduled swarm run (keywords=%i)
+Documentation=https://github.com/YOU/threat-intel-aggregator
+
+[Timer]
+# Run every 6 hours, anchored on boot + persistent so a restart doesn't skip
+# a missed slot. Randomised delay avoids every host hitting NVD at once when
+# a fleet of these runs on the same schedule.
+OnBootSec=5min
+OnUnitActiveSec=6h
+RandomizedDelaySec=10min
+Persistent=true
+Unit=threat-intel@%i.service
+
+[Install]
+WantedBy=timers.target

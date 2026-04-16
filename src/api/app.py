@@ -2,16 +2,18 @@
 FastAPI dashboard — REST API + SQLite cache for reports and SIEM alert delivery.
 Run: uvicorn src.api.app:app --reload
 """
+
 from __future__ import annotations
 
 import json
 import os
 import secrets as _py_secrets
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiosqlite
 import structlog
@@ -63,8 +65,9 @@ async def require_api_key(provided: str | None = Security(_api_key_header)) -> N
 
 # ── Lifespan (replaces deprecated on_event) ───────────────────────────────────
 
+
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Path("output").mkdir(exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         # WAL mode lets concurrent readers coexist with one writer — matters
@@ -73,7 +76,7 @@ async def lifespan(app: FastAPI):
         # `SQLITE_BUSY` on anything beyond a single background task.
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")  # WAL-safe, faster than FULL
-        await db.execute("PRAGMA busy_timeout=5000")   # 5s grace on contention
+        await db.execute("PRAGMA busy_timeout=5000")  # 5s grace on contention
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS reports (
@@ -106,21 +109,13 @@ async def lifespan(app: FastAPI):
         # endpoints — without these, every list call does a full table scan
         # and latency grows linearly with history.
         await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_reports_generated_at "
-            "ON reports(generated_at DESC)"
+            "CREATE INDEX IF NOT EXISTS idx_reports_generated_at ON reports(generated_at DESC)"
         )
         await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alerts_created_at "
-            "ON siem_alerts(created_at DESC)"
+            "CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON siem_alerts(created_at DESC)"
         )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alerts_severity "
-            "ON siem_alerts(severity)"
-        )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alerts_run_id "
-            "ON siem_alerts(run_id)"
-        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_alerts_severity ON siem_alerts(severity)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_alerts_run_id ON siem_alerts(run_id)")
         await db.commit()
     logger.info("database_initialized", path=DB_PATH)
     yield
@@ -143,6 +138,7 @@ app.add_middleware(
 
 
 # ── Request/Response schemas ──────────────────────────────────────────────────
+
 
 class RunRequest(BaseModel):
     keywords: list[str] = []
@@ -168,10 +164,13 @@ class ReportSummary(BaseModel):
 
 # ── Background swarm runner ───────────────────────────────────────────────────
 
+
 async def _run_swarm_background(run_id: str, request: RunRequest) -> None:
-    from src.graph.swarm import run_swarm
     import os
+
     from pydantic import SecretStr
+
+    from src.graph.swarm import run_swarm
 
     def _secret(name: str) -> SecretStr | None:
         raw = os.getenv(name)
@@ -179,16 +178,17 @@ async def _run_swarm_background(run_id: str, request: RunRequest) -> None:
 
     config = {
         "configurable": {
-            "nvd_api_key":        _secret("NVD_API_KEY"),
-            "otx_api_key":        _secret("OTX_API_KEY"),
-            "abuseipdb_api_key":  _secret("ABUSEIPDB_API_KEY"),
-            "greynoise_api_key":  _secret("GREYNOISE_API_KEY"),
-            "anthropic_api_key":  _secret("ANTHROPIC_API_KEY"),
+            "nvd_api_key": _secret("NVD_API_KEY"),
+            "otx_api_key": _secret("OTX_API_KEY"),
+            "abuseipdb_api_key": _secret("ABUSEIPDB_API_KEY"),
+            "greynoise_api_key": _secret("GREYNOISE_API_KEY"),
+            "anthropic_api_key": _secret("ANTHROPIC_API_KEY"),
             "virustotal_api_key": _secret("VIRUSTOTAL_API_KEY"),
-            "shodan_api_key":     _secret("SHODAN_API_KEY"),
-            "github_token":       _secret("GITHUB_TOKEN"),
-            "cve_days_back":      7,
-            "attack_platform":    "Windows",
+            "shodan_api_key": _secret("SHODAN_API_KEY"),
+            "github_token": _secret("GITHUB_TOKEN"),
+            "cve_days_back": 7,
+            "attack_platform": "Windows",
+            "llm_model": os.getenv("LLM_MODEL", "claude-opus-4-20250514"),
         }
     }
 
@@ -234,7 +234,7 @@ async def _run_swarm_background(run_id: str, request: RunRequest) -> None:
                             alert.get("description", ""),
                             alert.get("cve_ref", ""),
                             alert.get("mitre_technique", ""),
-                            datetime.now(timezone.utc).isoformat(),
+                            datetime.now(UTC).isoformat(),
                             json.dumps(alert.get("tags", [])),
                         ),
                     )
@@ -247,8 +247,13 @@ async def _run_swarm_background(run_id: str, request: RunRequest) -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/runs", response_model=RunStatus, status_code=202,
-          dependencies=[Depends(require_api_key)])
+
+@app.post(
+    "/api/v1/runs",
+    response_model=RunStatus,
+    status_code=202,
+    dependencies=[Depends(require_api_key)],
+)
 async def trigger_run(request: RunRequest, background_tasks: BackgroundTasks) -> RunStatus:
     """Trigger a new threat intel aggregation swarm run."""
     run_id = str(uuid.uuid4())
@@ -261,8 +266,9 @@ async def trigger_run(request: RunRequest, background_tasks: BackgroundTasks) ->
     )
 
 
-@app.get("/api/v1/reports", response_model=list[ReportSummary],
-         dependencies=[Depends(require_api_key)])
+@app.get(
+    "/api/v1/reports", response_model=list[ReportSummary], dependencies=[Depends(require_api_key)]
+)
 async def list_reports(limit: int = 20) -> list[ReportSummary]:
     """List recent threat intelligence reports."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -286,8 +292,11 @@ async def list_reports(limit: int = 20) -> list[ReportSummary]:
     ]
 
 
-@app.get("/api/v1/reports/{run_id}", response_model=dict[str, Any],
-         dependencies=[Depends(require_api_key)])
+@app.get(
+    "/api/v1/reports/{run_id}",
+    response_model=dict[str, Any],
+    dependencies=[Depends(require_api_key)],
+)
 async def get_report(run_id: str) -> dict[str, Any]:
     """Get full report JSON for a run."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -299,11 +308,14 @@ async def get_report(run_id: str) -> dict[str, Any]:
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Report not found: {run_id}")
-    return json.loads(row["full_json"])
+    return cast("dict[str, Any]", json.loads(row["full_json"]))
 
 
-@app.get("/api/v1/reports/{run_id}/markdown", response_class=PlainTextResponse,
-         dependencies=[Depends(require_api_key)])
+@app.get(
+    "/api/v1/reports/{run_id}/markdown",
+    response_class=PlainTextResponse,
+    dependencies=[Depends(require_api_key)],
+)
 async def get_report_markdown(run_id: str) -> str:
     """Get markdown-rendered report."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -315,11 +327,12 @@ async def get_report_markdown(run_id: str) -> str:
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Report not found: {run_id}")
-    return row["markdown_report"]
+    return cast("str", row["markdown_report"])
 
 
-@app.get("/api/v1/alerts", response_model=list[dict[str, Any]],
-         dependencies=[Depends(require_api_key)])
+@app.get(
+    "/api/v1/alerts", response_model=list[dict[str, Any]], dependencies=[Depends(require_api_key)]
+)
 async def list_alerts(severity: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     """List SIEM alerts, optionally filtered by severity."""
     query = "SELECT * FROM siem_alerts"

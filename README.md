@@ -58,6 +58,100 @@ Six external APIs, four agents, one DAG, one correlated report per run.
 
 ---
 
+## V2 — Enterprise features
+
+V2 layers five new components on top of the V1 swarm without changing any
+edge outside the graph. Every addition is either honored by the supervisor
+(opt-in routing) or backwards-compatible (the overlays leave V1 fields
+untouched).
+
+### Supervisor — dynamic routing
+
+Before the parallel fan-out, `src/agents/supervisor.py` asks Claude to
+choose which agents to run, given the query keywords. The result lands on
+`state.swarm_config.activate_agents`, and `_parallel_ingest_node` /
+`_enrichment_node` honor it via the `_INGEST_AGENTS` and
+`_ENRICHMENT_AGENTS_TIER1` name registries in `src/graph/swarm.py`. Run
+without keywords (or without `ANTHROPIC_API_KEY`) and the supervisor
+short-circuits to a default full-swarm config.
+
+### Enrichment tier — immutable overlay pattern
+
+Four enrichment agents run after normalization: **EPSS** (exploit
+probability), **VirusTotal** (malware families + detection ratios),
+**GitHub Advisory** (supply-chain context), **Shodan** (exposed services).
+Tier 1 fans out concurrently; Shodan runs afterwards because it benefits
+from the enrichment-bumped severities to pick which IPs to spend credits
+on.
+
+The cardinal rule: **enrichment never mutates `severity` or `tags` or
+`cve_ids` in place.** It writes `NormalizedThreat.enriched_severity` and
+appends to `enriched_tags`. Consumers that want the enrichment-informed
+view read `effective_severity` / `effective_tags` (both are Pydantic
+computed fields). Keeping the original fields pristine means `content_hash`
+stays valid and the post-enrichment dedup pass (inside `_enrichment_node`)
+converges deterministically.
+
+`src/agents/_enrichment_base.py::enrichment_agent(name=...)` is a decorator
+that absorbs the envelope (stopwatch, success/failure `AgentResult`,
+return-dict shape) — every enrichment agent body is 30–50 LOC instead of
+the old 80+.
+
+### Reflection — passive scorer
+
+`src/agents/reflection.py` runs after correlation, scores the report
+confidence 0–1, identifies intelligence gaps, and appends an "Analyst
+reflection" section to the markdown. Deliberately **passive**: there is no
+conditional edge back to enrichment. The non-goal is documented in the
+module docstring.
+
+### IOC sidecar — real `IOCRecord` via `state.raw_iocs`
+
+`ioc_extractor_agent` returns both `agent_results` and the raw `IOCRecord`
+list (`raw_iocs`), which `_parallel_ingest_node` accumulates into
+`SwarmState.raw_iocs`. The report coordinator emits
+`output/*_iocs.json` directly from these records, so
+`scripts/extract_iocs.py` sees real provider-sourced `confidence` /
+`abuse_score` / `sources` values — not synthetic mappings from severity.
+
+Per-threat IOC type is now a typed `Literal` field (`NormalizedThreat.ioc_type`)
+populated by `normalize_ioc`, so `scripts/`, the sidecar emitter, and
+VirusTotal enrichment read it directly instead of fishing it out of
+`tags`.
+
+### API auth + CORS
+
+`POST /api/v1/runs` and every report/alert-read endpoint require an
+`X-API-Key` header when `TIA_API_KEY` is set. The comparison uses
+`secrets.compare_digest` for timing-attack resistance. `/api/v1/health`
+stays unauthenticated (k8s-liveness-friendly) and reports component status
+(SQLite reachable, Anthropic key present, auth mode). CORS is pinned via
+`TIA_CORS_ORIGINS` (comma-separated, wildcards stripped).
+
+Missing `TIA_API_KEY` logs a loud warning at startup — the server still
+runs in dev mode but advertises it under `/api/v1/health`.
+
+### SSRF guards
+
+Any IP/domain/hash that flows into a URL path (Shodan `/shodan/host/{ip}`,
+VirusTotal `/api/v3/files/{hash}`, GreyNoise `/v3/riot/{ip}`) passes
+through `is_valid_ip` / `is_valid_domain` / `is_valid_hash` in
+`src/tools/base_client.py` before request construction. Malformed values
+short-circuit to `None` with a `*_rejected` log line — no crafted paths
+reach upstream hosts.
+
+### API key handling — `SecretStr` wrapping
+
+Every `*_API_KEY` env read in `main.py::_build_config` and
+`src/api/app.py::_run_swarm_background` wraps the value in
+`pydantic.SecretStr`. A stray `logger.info("config", config=cfg)` anywhere
+in the stack would render `SecretStr('**********')` instead of the key.
+`BaseAPIClient.__init__` unwraps once on construction; the three direct
+Anthropic SDK call sites (correlation, supervisor, reflection) use
+`unwrap_secret(...)` at the point of use.
+
+---
+
 ## Quickstart
 
 ```bash
@@ -78,6 +172,33 @@ ls -la output/                             # .md + .json + .ndjson
 ```
 
 Your first run against CISA KEV alone (no API keys at all) will still produce a correlated report — every downstream agent degrades gracefully when its key is missing.
+
+### Container + service deploys
+
+```bash
+# Local dev — API dashboard on :8000 with named-volume persistence
+docker compose up -d
+
+# One-shot swarm run in a container sibling
+docker compose run --rm cli cli --keywords ransomware --max-cves 50
+
+# Classic Linux host (see deploy/systemd/README.md for full setup)
+sudo systemctl enable --now threat-intel-api.service
+sudo systemctl enable --now threat-intel@ransomware.timer   # 6-hour cadence
+```
+
+Both deploy modes run as a non-root user (`tia`, uid 10001) with hardened
+sandboxing (`NoNewPrivileges`, `ProtectSystem=strict`,
+`MemoryDenyWriteExecute`, empty capability set). API keys come from a
+0600-mode env file — never baked into the image.
+
+### Local development
+
+```bash
+pip install pre-commit && pre-commit install        # auto-lint on commit
+pre-commit run --all-files                          # one-shot sweep
+pre-commit run mypy --hook-stage manual             # strict type check (advisory)
+```
 
 ### Repository layout
 
@@ -155,16 +276,34 @@ Upside:
 
 | Variable | Role | Status | Source |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Drives the correlation agent | **Required** | console.anthropic.com |
-| `NVD_API_KEY` | Raises NVD rate limit 5× (25 req/30s) | Recommended | nvd.nist.gov/developers/request-an-api-key |
+| `ANTHROPIC_API_KEY` | Drives correlation, supervisor routing, reflection | **Required** | console.anthropic.com |
+| `NVD_API_KEY` | Raises NVD rate limit 10× (50 req/30s) | Recommended | nvd.nist.gov/developers/request-an-api-key |
 | `OTX_API_KEY` | AlienVault OTX pulse feeds | Recommended | otx.alienvault.com (free) |
 | `ABUSEIPDB_API_KEY` | AbuseIPDB malicious-IP blocklist | Recommended | abuseipdb.com/api (free tier OK) |
+| `VIRUSTOTAL_API_KEY` | VT enrichment (detection ratios, malware families) | Recommended | virustotal.com (free: 4 req/min, 500/day) |
+| `GITHUB_TOKEN` | GitHub Advisory enrichment — raises rate limit | Recommended | github.com/settings/tokens (read-only scope fine) |
+| `SHODAN_API_KEY` | Shodan enrichment — open-port / service banners / CVE-on-service | Optional | shodan.io (free: 1 credit/day) |
 | `GREYNOISE_API_KEY` | GreyNoise GNQL scanner data | Optional | greynoise.io (paid tier for GNQL) |
-| *(none)* | CISA KEV catalogue | Always on | cisa.gov/known-exploited-vulnerabilities |
+| *(none)* | CISA KEV catalogue + EPSS (FIRST.org) | Always on | cisa.gov + first.org |
 
-Missing keys surface as warnings during `--dry-run`; the corresponding agent still runs but returns an empty list.
+### API server env
 
-Tuning vars: `CVE_DAYS_BACK` (lookback window, default 7), `ATTACK_PLATFORM` (MITRE filter, default `Windows`), `LOG_FORMAT=json` for SIEM-friendly stdout.
+| Variable | Role | Default |
+|---|---|---|
+| `TIA_API_KEY` | Gates `POST /api/v1/runs` and all report/alert reads via `X-API-Key` header. Unset → dev mode with warning. | unset |
+| `TIA_CORS_ORIGINS` | Comma-separated origin allow-list; wildcards (`*`) are stripped. | `http://localhost:3000,http://localhost:8000` |
+| `API_HOST` / `API_PORT` | `uvicorn` bind address/port. | `0.0.0.0` / `8000` |
+
+Missing *intel-source* keys surface as warnings during `--dry-run`; the corresponding agent still runs but returns an empty list. Missing `TIA_API_KEY` does not block startup — the server logs `tia_api_key_unset` and accepts requests without a header.
+
+### Tuning
+
+| Variable | Effect | Default |
+|---|---|---|
+| `CVE_DAYS_BACK` | NVD lookback window | `7` |
+| `ATTACK_PLATFORM` | MITRE ATT&CK platform filter | `Windows` |
+| `LOG_FORMAT` | `console` \| `json` (JSON is SIEM-ingest-ready) | `console` |
+| `LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` | `INFO` |
 
 ---
 
@@ -269,8 +408,10 @@ The contract is small. To add, say, a Shodan scanner:
 1. **Client** — `src/tools/shodan_client.py`, subclass `BaseAPIClient`. Set `base_url`, override `_build_headers()`, expose an async method that returns `list[IOCRecord]` or a new raw model.
 2. **Raw model** — if the new source produces a shape that doesn't fit `IOCRecord`/`CVERecord`/etc., add a new Pydantic model to `src/models/threat.py`.
 3. **Normalizer** — add `normalize_shodan(...)` to `src/pipeline/normalizer.py` producing a `NormalizedThreat`. The `content_hash` will compose automatically from the fields you populate.
-4. **Agent** — `src/agents/shodan_scanner.py` with signature `async def shodan_scanner_agent(state: SwarmState, config: dict) -> dict`. Wrap the fetch in `try/except`, time it with `time.monotonic()`, return `{"agent_results": state.agent_results + [AgentResult(...)]}`.
-5. **Wire it in** — `src/graph/swarm.py::parallel_ingest_node`: add one more coroutine to the `asyncio.gather(...)` call. That's the only DAG edit. The normalization/correlation/report nodes adapt automatically because they consume `NormalizedThreat`, not source-specific shapes.
+4. **Agent** — two shapes depending on where it lives in the DAG:
+   * **Ingest agent** (runs inside `_parallel_ingest_node`): `async def my_agent(state: SwarmState, config: dict) -> dict`, returning `{"agent_results": [*state.agent_results, AgentResult(...)]}`.
+   * **Enrichment agent** (runs inside `_enrichment_node`): decorate with `@enrichment_agent("my_agent")` from `src/agents/_enrichment_base.py`. The body returns `(new_records, items_fetched, extra_log_fields)` or `None` for a no-op skip — the decorator handles timing, exception wrapping, and the envelope. Write overlays to `threat.enriched_severity` / `threat.enriched_tags` — never mutate `severity` / `tags` / `cve_ids` in place.
+5. **Wire it in** — add one entry to `_INGEST_AGENTS` (for an ingest agent) or `_ENRICHMENT_AGENTS_TIER1` (for enrichment) in `src/graph/swarm.py`. That's the only DAG edit. The supervisor will now know the agent exists; the fan-out runs it when `swarm_config.activate_agents` includes its name.
 6. **Test** — `tests/unit/test_tool_clients.py` for HTTP parsing (use `aioresponses` or `unittest.mock.AsyncMock` on `BaseAPIClient.get`), and an entry in `tests/integration/test_swarm_pipeline.py` patching the new fetch.
 
 No graph reshaping, no global state, no `if source == 'shodan'` branches anywhere downstream.

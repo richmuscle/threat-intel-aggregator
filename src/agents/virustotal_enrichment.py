@@ -4,7 +4,10 @@ Free tier: 500 lookups/day, 4 req/min.
 Writes to `enriched_*` overlays so the provider-original severity/tags stay
 intact and `content_hash` remains valid.
 """
+
 from __future__ import annotations
+
+from typing import Any
 
 import structlog
 
@@ -18,7 +21,9 @@ logger = structlog.get_logger(__name__)
 
 
 @enrichment_agent("virustotal_enrichment")
-async def virustotal_enrichment_agent(state: SwarmState, config: dict) -> EnrichmentResult:
+async def virustotal_enrichment_agent(
+    state: SwarmState, config: dict[str, Any]
+) -> EnrichmentResult:
     vt_key = unwrap_secret(config.get("configurable", {}).get("virustotal_api_key"))
     if not vt_key:
         return None  # no-op: key not configured
@@ -45,11 +50,16 @@ async def virustotal_enrichment_agent(state: SwarmState, config: dict) -> Enrich
 
     enriched_count = 0
     for threat in state.normalized_threats:
+        # Idempotency guard (P1-B): skip threats we've already overlayed.
+        if "virustotal" in threat.enrichments_applied:
+            continue
+        touched = False
         for ioc_val in threat.ioc_values:
             report = vt_results.get(ioc_val)
             if not report:
                 continue
             enriched_count += 1
+            touched = True
 
             ratio_pct = int(report.detection_ratio * 100)
             threat.enriched_tags.append(f"vt-detection:{ratio_pct}%")
@@ -62,5 +72,7 @@ async def virustotal_enrichment_agent(state: SwarmState, config: dict) -> Enrich
                 threat.enriched_severity = Severity.CRITICAL
             elif report.detection_ratio >= 0.5 and threat.effective_severity == Severity.UNKNOWN:
                 threat.enriched_severity = Severity.HIGH
+        if touched:
+            threat.enrichments_applied.append("virustotal")
 
     return [], enriched_count, {"enriched": enriched_count}
